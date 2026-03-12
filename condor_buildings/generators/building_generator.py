@@ -23,7 +23,7 @@ from ..processing.footprint import (
     FootprintAnalysis,
     compute_obb,
 )
-from .walls import generate_walls, generate_walls_lod1, generate_walls_for_gabled, generate_walls_for_hipped
+from .walls import generate_walls, generate_walls_lod1, generate_walls_for_gabled, generate_walls_for_hipped, generate_highrise_walls
 from .roof_flat import generate_flat_roof
 from .roof_gabled import (
     generate_gabled_roof,
@@ -188,6 +188,32 @@ class BuildingGeneratorResult:
     footprint_analysis: Optional[FootprintAnalysis] = None
 
 
+def _should_use_highrise_walls(building: BuildingRecord, actual_roof_type: RoofType = None) -> bool:
+    """
+    Determine if a building should use the highrise wall generator.
+
+    Highrise walls use the Highrise_atlas.dds (2048x12288) with multi-floor
+    quads instead of per-floor quads. This must match the classification
+    logic in MeshGrouper._add_flat_roof_walls() to ensure UV mapping
+    matches the texture group.
+
+    Returns True for: APARTMENT, COMMERCIAL, small OTHER (area <= 200),
+                      HOUSE with flat roof fallback.
+    Returns False for: INDUSTRIAL, large OTHER (area > 200),
+                       HOUSE with pitched roof.
+    """
+    if building.category in (BuildingCategory.APARTMENT, BuildingCategory.COMMERCIAL):
+        return True
+    if building.category == BuildingCategory.INDUSTRIAL:
+        return False
+    if building.category == BuildingCategory.OTHER:
+        return building.footprint.area() <= 200
+    # HOUSE: use highrise walls only when flat roof (fallback case)
+    if building.category == BuildingCategory.HOUSE:
+        return actual_roof_type == RoofType.FLAT
+    return False
+
+
 def generate_building(
     building: BuildingRecord,
     lod: int = 0
@@ -272,7 +298,10 @@ def generate_building_lod0(building: BuildingRecord) -> BuildingGeneratorResult:
         wall_mesh = generate_walls_for_hipped(building)
     else:
         # Flat or other roof: use rectangular walls
-        wall_mesh = generate_walls(building)
+        if _should_use_highrise_walls(building, actual_roof_type):
+            wall_mesh = generate_highrise_walls(building)
+        else:
+            wall_mesh = generate_walls(building)
 
     result.mesh.merge(wall_mesh)
 
@@ -351,7 +380,10 @@ def generate_building_lod1(building: BuildingRecord) -> BuildingGeneratorResult:
         wall_mesh = generate_walls_for_hipped(building)
     else:
         # Flat or other roof: use rectangular walls
-        wall_mesh = generate_walls_lod1(building)
+        if _should_use_highrise_walls(building, actual_roof_type):
+            wall_mesh = generate_highrise_walls(building)
+        else:
+            wall_mesh = generate_walls_lod1(building)
 
     result.mesh.merge(wall_mesh)
 
@@ -433,7 +465,10 @@ def generate_building_separated(
     elif actual_roof_type == RoofType.HIPPED:
         wall_mesh = generate_walls_for_hipped(building)
     else:
-        wall_mesh = generate_walls(building)
+        if _should_use_highrise_walls(building, actual_roof_type):
+            wall_mesh = generate_highrise_walls(building)
+        else:
+            wall_mesh = generate_walls(building)
 
     # Generate roof (separate, NOT merged)
     roof_mesh, actual_roof_type = _generate_roof(
@@ -967,7 +1002,9 @@ def select_roof_type(
     # =========================================================================
     if selection_mode == RoofSelectionMode.OSM_TAGS_ONLY:
         if building.category == BuildingCategory.HOUSE:
-            # Houses get gabled by default (hipped via --random-hipped or OSM tag)
+            # Tall houses (explicit OSM levels > 2) get flat roofs
+            if building.floors > GABLED_MAX_FLOORS:
+                return RoofType.FLAT
             return RoofType.GABLED
         else:
             # Everything else (apartments, commercial, industrial, OTHER/yes) = flat
@@ -994,6 +1031,9 @@ def select_roof_type(
         return RoofType.GABLED
 
     if category == BuildingCategory.HOUSE:
+        # Tall houses (explicit OSM levels > 2) get flat roofs
+        if building.floors > GABLED_MAX_FLOORS:
+            return RoofType.FLAT
         return RoofType.GABLED
 
     # Category OTHER (building=yes or unknown): use area heuristic

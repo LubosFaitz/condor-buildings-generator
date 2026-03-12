@@ -28,7 +28,20 @@ from ..config import (
     WALL_BLOCK_U,
     WALL_U_OFFSET,
     WALL_MIN_METERS,
+    HIGHRISE_ATLAS_HEIGHT_PX,
+    HIGHRISE_REGION_COUNT,
+    HIGHRISE_REGION_HEIGHT_PX,
+    HIGHRISE_FLOOR_HEIGHT_PX,
+    HIGHRISE_FLOORS_PER_REGION,
+    HIGHRISE_UPPER_FLOORS,
+    HIGHRISE_UPPER_SECTION_HEIGHT_PX,
+    HIGHRISE_APARTMENT_REGION_START,
+    HIGHRISE_APARTMENT_REGION_END,
+    HIGHRISE_COMMERCIAL_REGION_START,
+    HIGHRISE_COMMERCIAL_REGION_END,
+    HIGHRISE_U_METERS,
 )
+from ..models.building import BuildingCategory
 
 # Facade dimensions calculated to fit within [0.0, 0.75] V range
 # Total facade region: 0.75 - 0.0 = 0.75
@@ -542,3 +555,188 @@ def compute_sidewall_continuous_uvs(
         (u_end, v_top),       # [2] top-right
         (u_start, v_top),     # [3] top-left
     ]
+
+
+# =============================================================================
+# HIGHRISE WALL UV MAPPING (Highrise_atlas.dds)
+# =============================================================================
+
+def select_highrise_region(seed: int, category: BuildingCategory) -> int:
+    """
+    Select a texture region for a highrise building.
+
+    Deterministic selection based on building seed.
+    Apartments use regions 0-5 (top of atlas), commercial uses 6-11 (bottom).
+
+    Args:
+        seed: Building seed for deterministic selection
+        category: BuildingCategory (APARTMENT or COMMERCIAL)
+
+    Returns:
+        Region index [0..11]
+    """
+    rng = random.Random(seed)
+    if category == BuildingCategory.COMMERCIAL:
+        return rng.randint(
+            HIGHRISE_COMMERCIAL_REGION_START,
+            HIGHRISE_COMMERCIAL_REGION_END - 1,
+        )
+    else:
+        # APARTMENT (and any other category routed here)
+        return rng.randint(
+            HIGHRISE_APARTMENT_REGION_START,
+            HIGHRISE_APARTMENT_REGION_END - 1,
+        )
+
+
+def get_highrise_region_v_range(region_index: int) -> Tuple[float, float]:
+    """
+    Get the full V range for a highrise texture region.
+
+    Region 0 is at the TOP of the atlas (highest V).
+    Region 11 is at the BOTTOM.
+
+    Args:
+        region_index: Region index [0..11]
+
+    Returns:
+        (v_bottom, v_top) for the full 1024px region
+    """
+    if not 0 <= region_index < HIGHRISE_REGION_COUNT:
+        raise ValueError(
+            f"region_index must be 0-{HIGHRISE_REGION_COUNT - 1}, got {region_index}"
+        )
+
+    H = float(HIGHRISE_ATLAS_HEIGHT_PX)
+    region_h = float(HIGHRISE_REGION_HEIGHT_PX)
+
+    region_top_px = region_index * region_h
+    region_bottom_px = region_top_px + region_h
+
+    v_top = 1.0 - (region_top_px / H)
+    v_bottom = 1.0 - (region_bottom_px / H)
+
+    return v_bottom, v_top
+
+
+def compute_highrise_wall_u_span(wall_width_m: float) -> float:
+    """
+    Compute the U span for a highrise wall.
+
+    For the highrise atlas: 2048px width, 256px = 3m, so U=1.0 = 24m.
+    U starts at 0 (no door offset like houses).
+    U can exceed 1.0 (horizontal wrapping).
+
+    Wall width is rounded UP to nearest 3m block.
+
+    Args:
+        wall_width_m: Wall width in meters
+
+    Returns:
+        U span value
+    """
+    import math
+    rounded = math.ceil(wall_width_m / 3.0) * 3.0
+    rounded = max(rounded, 3.0)
+    return rounded / HIGHRISE_U_METERS
+
+
+def compute_highrise_wall_uvs(
+    wall_width_m: float,
+    building_floors: int,
+    region_index: int
+) -> List[List[Tuple[float, float]]]:
+    """
+    Compute UV coordinates for highrise wall quads.
+
+    Returns a list of quad UV sets. Each quad covers multiple floors:
+    - First quad: up to 4 floors, maps to full 1024px region
+    - Subsequent quads: up to 3 floors each, maps to upper 768px of region
+
+    Within a region (1024px, low V = bottom, high V = top):
+    - Bottom 256px = ground floor (lowest V)
+    - Next 256px = floor 2
+    - Next 256px = floor 3
+    - Top 256px = floor 4 (highest V)
+
+    Overflow quads map from the bottom of the upper section (floor 2 position)
+    growing upward:
+    - 1 overflow floor -> bottom 256px of upper section
+    - 2 overflow floors -> bottom 512px of upper section
+    - 3 overflow floors -> full 768px upper section
+    - 4+ overflow -> new cycle from bottom of upper section
+
+    Args:
+        wall_width_m: Wall width in meters
+        building_floors: Total number of floors
+        region_index: Texture region index [0..11]
+
+    Returns:
+        List of quad UV sets. Each set has 4 (u,v) tuples:
+        [bottom-left, bottom-right, top-right, top-left]
+    """
+    H = float(HIGHRISE_ATLAS_HEIGHT_PX)
+    region_h = float(HIGHRISE_REGION_HEIGHT_PX)
+    floor_px = float(HIGHRISE_FLOOR_HEIGHT_PX)
+
+    u_start = 0.0
+    u_end = compute_highrise_wall_u_span(wall_width_m)
+
+    # Region pixel boundaries (from atlas top)
+    region_top_px = region_index * region_h
+
+    # Upper section boundary: top 768px of region (skip ground floor at bottom)
+    # In pixel coords from atlas top:
+    #   upper top = region_top_px (top of region)
+    #   upper bottom = region_top_px + 768 (boundary between upper and ground)
+    upper_bottom_px = region_top_px + HIGHRISE_UPPER_SECTION_HEIGHT_PX
+
+    def px_to_v(y_px: float) -> float:
+        return 1.0 - (y_px / H)
+
+    quads = []
+    remaining = building_floors
+
+    # --- First quad: up to 4 floors, maps to full region ---
+    first_quad_floors = min(HIGHRISE_FLOORS_PER_REGION, remaining)
+
+    if first_quad_floors == HIGHRISE_FLOORS_PER_REGION:
+        # Full 4 floors -> full region
+        v_bottom = px_to_v(region_top_px + region_h)
+        v_top = px_to_v(region_top_px)
+    else:
+        # Fewer than 4 floors -> bottom portion of region
+        # Ground floor at bottom of region, growing upward
+        region_bottom_px = region_top_px + region_h
+        v_bottom = px_to_v(region_bottom_px)
+        v_top = px_to_v(region_bottom_px - first_quad_floors * floor_px)
+
+    quads.append([
+        (u_start, v_bottom),
+        (u_end, v_bottom),
+        (u_end, v_top),
+        (u_start, v_top),
+    ])
+    remaining -= first_quad_floors
+
+    # --- Subsequent quads: up to 3 floors each, upper section only ---
+    while remaining > 0:
+        overflow_floors = min(HIGHRISE_UPPER_FLOORS, remaining)
+
+        # Map from bottom of upper section growing upward
+        # N overflow floors: pixel range (768 - N*256) to 768 from region top
+        overflow_top_px = region_top_px + (HIGHRISE_UPPER_SECTION_HEIGHT_PX - overflow_floors * floor_px)
+        overflow_bottom_px = upper_bottom_px
+
+        v_bottom = px_to_v(overflow_bottom_px)
+        v_top = px_to_v(overflow_top_px)
+
+        quads.append([
+            (u_start, v_bottom),
+            (u_end, v_bottom),
+            (u_end, v_top),
+            (u_start, v_top),
+        ])
+        remaining -= overflow_floors
+
+    return quads

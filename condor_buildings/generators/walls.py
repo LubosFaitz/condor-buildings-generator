@@ -13,7 +13,7 @@ import math
 
 from ..models.geometry import Point2D, Polygon
 from ..models.mesh import MeshData
-from ..models.building import BuildingRecord
+from ..models.building import BuildingRecord, BuildingCategory
 from .uv_mapping import (
     select_building_variations,
     compute_wall_quad_uvs,
@@ -21,8 +21,10 @@ from .uv_mapping import (
     compute_pentagon_wall_uvs,
     compute_multi_floor_wall_uvs,
     compute_sidewall_continuous_uvs,
+    select_highrise_region,
+    compute_highrise_wall_uvs,
 )
-from ..config import DEFAULT_FLOOR_HEIGHT
+from ..config import DEFAULT_FLOOR_HEIGHT, HIGHRISE_FLOORS_PER_REGION, HIGHRISE_UPPER_FLOORS
 
 
 @dataclass
@@ -655,3 +657,169 @@ def _generate_hipped_hole_walls(
         uv_tl = mesh.add_uv(uvs[2][0], uvs[2][1])
 
         mesh.add_quad_with_uvs(bl, br, tr, tl, uv_bl, uv_br, uv_tr, uv_tl)
+
+
+# =============================================================================
+# HIGHRISE WALL GENERATION (Apartment / Commercial)
+# =============================================================================
+
+def generate_highrise_walls(
+    building: BuildingRecord,
+    config: Optional[WallGeneratorConfig] = None
+) -> MeshData:
+    """
+    Generate wall mesh for a highrise (apartment/commercial) building.
+
+    Uses the Highrise texture atlas (2048x12288, 12 regions of 2048x1024).
+    Creates multi-floor wall quads:
+    - First quad: up to 4 floors, mapped to full texture region
+    - Subsequent quads: up to 3 floors each, mapped to upper 768px of region
+
+    Args:
+        building: Building record with footprint and heights
+        config: Optional configuration
+
+    Returns:
+        MeshData with wall geometry
+    """
+    if config is None:
+        config = WallGeneratorConfig()
+
+    mesh = MeshData(osm_id=building.osm_id)
+
+    floor_z = building.floor_z
+    top_z = building.wall_top_z
+
+    # Select texture region based on category
+    region_index = select_highrise_region(building.seed, building.category)
+
+    # Generate outer walls
+    _generate_highrise_ring_walls(
+        mesh,
+        building.footprint.outer_ring,
+        floor_z,
+        top_z,
+        is_outer=True,
+        building_floors=building.floors,
+        region_index=region_index,
+    )
+
+    # Generate hole walls (facing inward)
+    for hole in building.footprint.holes:
+        _generate_highrise_ring_walls(
+            mesh,
+            hole,
+            floor_z,
+            top_z,
+            is_outer=False,
+            building_floors=building.floors,
+            region_index=region_index,
+        )
+
+    return mesh
+
+
+def _generate_highrise_ring_walls(
+    mesh: MeshData,
+    ring: List[Point2D],
+    floor_z: float,
+    top_z: float,
+    is_outer: bool,
+    building_floors: int,
+    region_index: int,
+) -> None:
+    """
+    Generate highrise wall quads for a single ring.
+
+    Creates multi-floor quads (up to 4 floors for the first quad,
+    up to 3 floors for subsequent overflow quads).
+
+    Args:
+        mesh: MeshData to add vertices and faces to
+        ring: Ring vertices (2D)
+        floor_z: Bottom elevation
+        top_z: Top elevation
+        is_outer: True for outer ring, False for holes
+        building_floors: Number of floors
+        region_index: Highrise texture region index [0..11]
+    """
+    n = len(ring)
+    if n < 3:
+        return
+
+    # Handle closed ring (skip duplicate closing vertex)
+    if ring[0].x == ring[-1].x and ring[0].y == ring[-1].y:
+        n -= 1
+
+    # Compute actual floor height to handle non-exact multiples
+    total_wall_height = top_z - floor_z
+    actual_floor_height = total_wall_height / building_floors if building_floors > 0 else DEFAULT_FLOOR_HEIGHT
+
+    # Compute Z ranges for each quad
+    quad_z_ranges = []
+    remaining = building_floors
+    z_current = floor_z
+
+    # First quad: up to 4 floors
+    first_floors = min(HIGHRISE_FLOORS_PER_REGION, remaining)
+    z_next = z_current + first_floors * actual_floor_height
+    quad_z_ranges.append((z_current, z_next))
+    remaining -= first_floors
+    z_current = z_next
+
+    # Subsequent quads: up to 3 floors each
+    while remaining > 0:
+        overflow_floors = min(HIGHRISE_UPPER_FLOORS, remaining)
+        z_next = z_current + overflow_floors * actual_floor_height
+        quad_z_ranges.append((z_current, z_next))
+        remaining -= overflow_floors
+        z_current = z_next
+
+    for i in range(n):
+        j = (i + 1) % n
+
+        p0 = ring[i]
+        p1 = ring[j]
+
+        # Calculate edge length for UV mapping
+        edge_dx = p1.x - p0.x
+        edge_dy = p1.y - p0.y
+        edge_len = math.sqrt(edge_dx * edge_dx + edge_dy * edge_dy)
+
+        if edge_len < 0.01:
+            continue
+
+        # Get UV quad sets for this edge
+        uv_quads = compute_highrise_wall_uvs(edge_len, building_floors, region_index)
+
+        # Generate one quad per multi-floor section
+        for quad_idx, (z_bottom, z_top) in enumerate(quad_z_ranges):
+            uvs = uv_quads[quad_idx]
+
+            if is_outer:
+                # Outer ring: normals face outward (CCW)
+                bl = mesh.add_vertex(p0.x, p0.y, z_bottom)
+                br = mesh.add_vertex(p1.x, p1.y, z_bottom)
+                tr = mesh.add_vertex(p1.x, p1.y, z_top)
+                tl = mesh.add_vertex(p0.x, p0.y, z_top)
+
+                uv_bl = mesh.add_uv(uvs[0][0], uvs[0][1])
+                uv_br = mesh.add_uv(uvs[1][0], uvs[1][1])
+                uv_tr = mesh.add_uv(uvs[2][0], uvs[2][1])
+                uv_tl = mesh.add_uv(uvs[3][0], uvs[3][1])
+
+                mesh.add_quad_with_uvs(bl, br, tr, tl, uv_bl, uv_br, uv_tr, uv_tl)
+            else:
+                # Hole ring: reverse winding for inward-facing normals
+                bl = mesh.add_vertex(p1.x, p1.y, z_bottom)
+                br = mesh.add_vertex(p0.x, p0.y, z_bottom)
+                tr = mesh.add_vertex(p0.x, p0.y, z_top)
+                tl = mesh.add_vertex(p1.x, p1.y, z_top)
+
+                # Reverse UV order for reversed winding
+                uv_bl = mesh.add_uv(uvs[1][0], uvs[1][1])
+                uv_br = mesh.add_uv(uvs[0][0], uvs[0][1])
+                uv_tr = mesh.add_uv(uvs[3][0], uvs[3][1])
+                uv_tl = mesh.add_uv(uvs[2][0], uvs[2][1])
+
+                mesh.add_quad_with_uvs(bl, br, tr, tl, uv_bl, uv_br, uv_tr, uv_tl)

@@ -229,6 +229,37 @@ WALL_U_OFFSET = 1.0 / 3.0     # Start U offset (skip door section at U 0.0-0.33)
 WALL_MIN_METERS = 3.0         # Minimum wall length for UV mapping
 
 # =============================================================================
+# HIGHRISE TEXTURE ATLAS SETTINGS (Highrise_atlas.dds)
+# =============================================================================
+# Separate atlas for APARTMENT and COMMERCIAL building walls.
+# 2048x12288 pixels, 12 regions of 2048x1024 each.
+# Top 6 regions = apartment textures, bottom 6 = commercial textures.
+# Each region has 4 floors at 256px per floor (256px = 3 meters).
+
+HIGHRISE_ATLAS_WIDTH_PX = 2048
+HIGHRISE_ATLAS_HEIGHT_PX = 12288
+
+# Region layout
+HIGHRISE_REGION_COUNT = 12           # 6 apartment + 6 commercial
+HIGHRISE_REGION_HEIGHT_PX = 1024     # Each region = 2048x1024
+
+# Floor dimensions within each region
+HIGHRISE_FLOOR_HEIGHT_PX = 256       # 256px per floor = 3 meters
+HIGHRISE_FLOORS_PER_REGION = 4       # 4 floors per region (1024 / 256)
+HIGHRISE_UPPER_FLOORS = 3            # Overflow floors per cycle (top 768px)
+HIGHRISE_UPPER_SECTION_HEIGHT_PX = 768  # 3 upper floors * 256px
+
+# Category region ranges (indices)
+HIGHRISE_APARTMENT_REGION_START = 0   # Regions 0-5 for apartments
+HIGHRISE_APARTMENT_REGION_END = 6
+HIGHRISE_COMMERCIAL_REGION_START = 6  # Regions 6-11 for commercial
+HIGHRISE_COMMERCIAL_REGION_END = 12
+
+# U mapping: 2048px width at 256px/3m = 24 meters per full U span
+HIGHRISE_U_METERS = 24.0
+HIGHRISE_FLOOR_METERS = 3.0           # Same as DEFAULT_FLOOR_HEIGHT
+
+# =============================================================================
 # EXPORT SETTINGS
 # =============================================================================
 

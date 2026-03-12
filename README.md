@@ -1,6 +1,6 @@
 # Condor Buildings Generator
 
-[![Version](https://img.shields.io/badge/version-0.6.8-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
+[![Version](https://img.shields.io/badge/version-0.7.3-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org/)
 [![Blender](https://img.shields.io/badge/blender-4.0+-orange.svg)](https://www.blender.org/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
@@ -30,7 +30,7 @@ python -m condor_buildings.main \
 
 ### Option 2: Blender Addon (v0.5.0+)
 
-1. Download `condor_buildings_v0.6.8.zip` from releases
+1. Download `condor_buildings_v0.7.3.zip` from releases
 2. In Blender: Edit > Preferences > Add-ons > Install
 3. Select the ZIP file
 4. Enable "Condor Buildings Generator" addon
@@ -40,6 +40,17 @@ python -m condor_buildings.main \
 8. Select a landscape from the dropdown
 9. Set patch range (X/Y min/max) or enable single patch mode
 10. Click "Generate Buildings"
+
+**New in v0.7.3:**
+- **Fix UV mapping for buildings with height tags**: Floor estimation from OSM `height` tags used `int()` (truncates down) instead of `round()`. Buildings with non-exact-3m heights (e.g., `height=5`, `height=11`) got one fewer floor than expected, causing wall textures to show fewer floor sections than the building height warranted. Houses and apartments with explicit OSM height tags are now correctly mapped.
+
+**New in v0.7.2:**
+- **Fix HOUSE height estimation**: Houses no longer estimated at 3 floors for footprints > 150 m². All houses now default to 2 floors (6m) unless OSM explicitly tags `building:levels` or `height`. This fixes the majority of houses incorrectly getting flat roofs and highrise textures.
+- **Floor guard in roof selection**: `select_roof_type()` now checks floor count for HOUSE category, preventing tall houses (explicit OSM `building:levels > 2`) from being assigned pitched roofs.
+- **Hipped roof stability**: Increased near-square detection tolerance and added ridge vertex validation to prevent "diamond" visual artifacts on near-square buildings.
+
+**New in v0.7.0:**
+- **Highrise wall system**: Apartment and commercial buildings now use a separate `Highrise_atlas.dds` texture (2048x12288, 12 regions). Multi-floor wall quads (up to 4 floors per quad) with category-specific texture regions (6 apartment, 6 commercial). Previous `apartment_walls` and `commercial_walls` OBJ objects merged into single `Highrise_walls`.
 
 **New in v0.6.8:**
 - **Correct polyskel roof UV mapping**: Roof tiles now have consistent size and aspect ratio across all faces of complex hipped roofs (L/T/U-shaped buildings). Uses orthographic planar projection with unified global scaling.
@@ -1339,6 +1350,10 @@ Condor 3D (x, y, z)
 | 0.6.2 | Jan 30, 2026 | Vertex optimization - automatic deduplication reduces mesh size by ~63% |
 | 0.6.3 | Jan 31, 2026 | Texture-based mesh grouping (10 objects by texture type) and hipped roof UV mapping fix for non-square footprints |
 | 0.6.8 | Feb 10, 2026 | Correct polyskel roof UV mapping - consistent tile size and aspect ratio across all faces using orthographic planar projection with unified global Z scaling |
+| 0.7.0 | Feb 11, 2026 | Highrise wall system - separate Highrise_atlas.dds (2048x12288) for apartment/commercial walls, multi-floor quads, merged Highrise_walls OBJ object |
+| 0.7.1 | Feb 12, 2026 | Fix HOUSE flat-roof grouping - buildings with flat roof fallback now route to Highrise_walls instead of houses |
+| 0.7.2 | Feb 14, 2026 | Fix HOUSE height estimation (always 2 floors unless OSM tagged), floor guard in select_roof_type(), hipped roof near-square stability |
+| 0.7.3 | Mar 12, 2026 | Fix UV mapping for buildings with OSM height tags - floor estimation uses round() instead of int() to avoid truncation |
 
 ### Changelog Files
 

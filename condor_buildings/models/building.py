@@ -273,11 +273,11 @@ class BuildingRecord:
             floors = 2 if footprint_area > 200 else 1
             height = floors * floor_height
         elif category == BuildingCategory.HOUSE:
-            # Houses: small = 2 floors, larger = 2-3 floors
-            if footprint_area > 150:
-                floors = 3
-            else:
-                floors = 2
+            # Houses always estimated at 2 floors (6m).
+            # Only explicit OSM tags (building:levels or height) override this.
+            # Previous threshold of 150m² was too low - a typical European house
+            # of 12m x 14m = 168m² is normal and should still be 2 floors.
+            floors = 2
             height = floors * floor_height
         else:
             # Other/unknown: use heuristic based on footprint

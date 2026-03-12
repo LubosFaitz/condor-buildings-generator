@@ -7,8 +7,7 @@ separate object in the OBJ file.
 
 Groups:
 - houses: Pitched roof buildings (walls + roofs combined)
-- apartment_walls: Flat roof apartment building walls
-- commercial_walls: Flat roof commercial building walls
+- Highrise_walls: Apartment + commercial building walls (Highrise_atlas.dds)
 - industrial_walls: Flat roof industrial building walls
 - flat_roof_1..6: Flat roofs distributed randomly across 6 texture groups
 """
@@ -58,9 +57,10 @@ class MeshGrouper:
         # Pitched buildings: walls + roofs combined
         self.houses = MeshData()
 
-        # Flat roof walls by category
-        self.apartment_walls = MeshData()
-        self.commercial_walls = MeshData()
+        # Highrise walls: apartment + commercial merged (Highrise_atlas.dds)
+        self.highrise_walls = MeshData()
+
+        # Industrial walls (unchanged, uses original atlas)
         self.industrial_walls = MeshData()
 
         # Flat roofs distributed across multiple texture groups
@@ -71,8 +71,7 @@ class MeshGrouper:
         # Statistics
         self.stats = {
             'houses_count': 0,
-            'apartment_walls_count': 0,
-            'commercial_walls_count': 0,
+            'highrise_walls_count': 0,
             'industrial_walls_count': 0,
             'flat_roof_counts': [0] * num_flat_roof_groups,
         }
@@ -112,20 +111,20 @@ class MeshGrouper:
         Add flat roof building walls to the appropriate category group.
 
         Classification rules:
-        - APARTMENT -> apartment_walls
-        - COMMERCIAL -> commercial_walls
+        - APARTMENT -> Highrise_walls
+        - COMMERCIAL -> Highrise_walls
         - INDUSTRIAL -> industrial_walls
-        - OTHER: area > 200m² -> industrial_walls, else -> apartment_walls
-        - HOUSE (rare, fallback to flat) -> apartment_walls
+        - OTHER: area > 200m² -> industrial_walls, else -> Highrise_walls
+        - HOUSE (rare, fallback to flat) -> Highrise_walls (regions 0-5)
         """
         category = result.category
 
         if category == BuildingCategory.APARTMENT:
-            self.apartment_walls.merge(result.walls)
-            self.stats['apartment_walls_count'] += 1
+            self.highrise_walls.merge(result.walls)
+            self.stats['highrise_walls_count'] += 1
         elif category == BuildingCategory.COMMERCIAL:
-            self.commercial_walls.merge(result.walls)
-            self.stats['commercial_walls_count'] += 1
+            self.highrise_walls.merge(result.walls)
+            self.stats['highrise_walls_count'] += 1
         elif category == BuildingCategory.INDUSTRIAL:
             self.industrial_walls.merge(result.walls)
             self.stats['industrial_walls_count'] += 1
@@ -136,12 +135,13 @@ class MeshGrouper:
                 self.industrial_walls.merge(result.walls)
                 self.stats['industrial_walls_count'] += 1
             else:
-                self.apartment_walls.merge(result.walls)
-                self.stats['apartment_walls_count'] += 1
+                self.highrise_walls.merge(result.walls)
+                self.stats['highrise_walls_count'] += 1
         else:
-            # HOUSE with flat roof (rare fallback case)
-            self.apartment_walls.merge(result.walls)
-            self.stats['apartment_walls_count'] += 1
+            # HOUSE with flat roof (rare fallback case) - route to Highrise_walls
+            # Uses highrise atlas (apartment regions 0-5), NOT houses atlas
+            self.highrise_walls.merge(result.walls)
+            self.stats['highrise_walls_count'] += 1
 
     def _add_flat_roof(self, building: BuildingRecord, roof: MeshData) -> None:
         """
@@ -162,8 +162,7 @@ class MeshGrouper:
         """
         groups = {
             'houses': self.houses,
-            'apartment_walls': self.apartment_walls,
-            'commercial_walls': self.commercial_walls,
+            'Highrise_walls': self.highrise_walls,
             'industrial_walls': self.industrial_walls,
         }
 
@@ -189,8 +188,7 @@ class MeshGrouper:
         """Get a human-readable summary of grouping statistics."""
         lines = [
             f"houses: {self.stats['houses_count']} buildings",
-            f"apartment_walls: {self.stats['apartment_walls_count']} buildings",
-            f"commercial_walls: {self.stats['commercial_walls_count']} buildings",
+            f"Highrise_walls: {self.stats['highrise_walls_count']} buildings",
             f"industrial_walls: {self.stats['industrial_walls_count']} buildings",
         ]
 

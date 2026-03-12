@@ -459,7 +459,13 @@ def _parse_floors(
         return estimated_floors
 
     # Estimate from height (assuming 3m per floor)
-    return max(1, int(height_m / 3.0))
+    # Use round() instead of int() to avoid truncation errors:
+    # int(5.0/3.0) = 1 (wrong), round(5.0/3.0) = 2 (correct)
+    # int(11.0/3.0) = 3 (wrong), round(11.0/3.0) = 4 (correct)
+    # Buildings with non-exact-3m heights (e.g., height=5, height=11)
+    # were getting one fewer floor than expected, causing UV mapping
+    # to show fewer texture floors than the wall height warranted.
+    return max(1, round(height_m / 3.0))
 
 
 def _parse_roof_pitch(tags: Dict[str, str]) -> float:

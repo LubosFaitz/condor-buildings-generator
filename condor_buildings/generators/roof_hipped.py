@@ -47,7 +47,9 @@ _NEXT_INDICES = (1, 2, 3, 0)
 _OPPOSITE_INDICES = (2, 3, 0, 1)
 
 # Tolerance for square detection (relative difference in distances)
-SQUARE_TOLERANCE = 0.01
+# Increased from 0.01 to 0.15 so near-square buildings use the more robust
+# pyramidal roof instead of producing degenerate short ridges ("diamond" look)
+SQUARE_TOLERANCE = 0.15
 
 
 @dataclass
@@ -164,9 +166,19 @@ def generate_hipped_roof(
     else:
         # Standard hipped roof: ridge between two edge events
         # Pass tan_pitch calculated from original footprint for consistent geometry
-        _generate_hipped_roof_quadrangle(
-            mesh, verts_2d, edge_geom, eave_z, roof_height, roof_index, tan_pitch
-        )
+        # Validate ridge vertices before committing - fall back to pyramidal if degenerate
+        if _validate_hipped_ridge(verts_2d, edge_geom, tan_pitch, eave_z):
+            _generate_hipped_roof_quadrangle(
+                mesh, verts_2d, edge_geom, eave_z, roof_height, roof_index, tan_pitch
+            )
+        else:
+            logger.debug(
+                f"Building {building.osm_id}: hipped ridge degenerate, "
+                f"falling back to pyramidal"
+            )
+            _generate_pyramidal_roof(
+                mesh, verts_2d, eave_z, ridge_z, roof_index
+            )
 
     faces_after = len(mesh.faces)
     roof_face_count = faces_after - faces_before
@@ -445,6 +457,50 @@ def _get_ridge_vertex(
     z = eave_z + dist * tan_pitch
 
     return (x, y, z)
+
+
+def _validate_hipped_ridge(
+    verts: List[Tuple[float, float]],
+    edge_geom: EdgeGeometry,
+    tan_pitch: float,
+    eave_z: float
+) -> bool:
+    """
+    Validate that computed ridge vertices fall within the footprint bounding box.
+
+    For near-square or degenerate quadrilaterals, the BLOSM algorithm can produce
+    ridge vertices that are displaced outside the footprint, causing a "diamond"
+    visual artifact. This function detects such cases.
+
+    Args:
+        verts: Footprint vertices (x, y)
+        edge_geom: Computed edge geometry
+        tan_pitch: Tangent of roof pitch
+        eave_z: Z at eave level
+
+    Returns:
+        True if ridge geometry is valid, False if degenerate
+    """
+    distances = edge_geom.distances
+    min_idx1 = min(_INDICES, key=lambda i: distances[i])
+    min_idx2 = _OPPOSITE_INDICES[min_idx1]
+
+    ridge_v1 = _get_ridge_vertex(verts[min_idx1], min_idx1, edge_geom, tan_pitch, eave_z)
+    ridge_v2 = _get_ridge_vertex(verts[min_idx2], min_idx2, edge_geom, tan_pitch, eave_z)
+
+    # Compute bounding box with tolerance
+    min_x = min(v[0] for v in verts)
+    max_x = max(v[0] for v in verts)
+    min_y = min(v[1] for v in verts)
+    max_y = max(v[1] for v in verts)
+    tolerance = max(max_x - min_x, max_y - min_y) * 0.1  # 10% margin
+
+    for rv in [ridge_v1, ridge_v2]:
+        if (rv[0] < min_x - tolerance or rv[0] > max_x + tolerance or
+                rv[1] < min_y - tolerance or rv[1] > max_y + tolerance):
+            return False
+
+    return True
 
 
 def _generate_hipped_roof_quadrangle(
