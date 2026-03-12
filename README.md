@@ -42,7 +42,7 @@ python -m condor_buildings.main \
 10. Click "Generate Buildings"
 
 **New in v0.7.3:**
-- **Fix UV mapping for buildings with height tags**: Floor estimation from OSM `height` tags used `int()` (truncates down) instead of `round()`. Buildings with non-exact-3m heights (e.g., `height=5`, `height=11`) got one fewer floor than expected, causing wall textures to show fewer floor sections than the building height warranted. Houses and apartments with explicit OSM height tags are now correctly mapped.
+- **Fix UV mapping (floors/height sync)**: When a building had a `building:levels` OSM tag but no `height` tag, `floors` came from the tag while `height_m` came from the category estimate — they could diverge, causing wall textures to show the wrong number of floor sections. Now `height_m` is recomputed to match `floors` when height was estimated. Also fixes `int()` → `round()` truncation for explicit height tags.
 
 **New in v0.7.2:**
 - **Fix HOUSE height estimation**: Houses no longer estimated at 3 floors for footprints > 150 m². All houses now default to 2 floors (6m) unless OSM explicitly tags `building:levels` or `height`. This fixes the majority of houses incorrectly getting flat roofs and highrise textures.
@@ -1353,7 +1353,7 @@ Condor 3D (x, y, z)
 | 0.7.0 | Feb 11, 2026 | Highrise wall system - separate Highrise_atlas.dds (2048x12288) for apartment/commercial walls, multi-floor quads, merged Highrise_walls OBJ object |
 | 0.7.1 | Feb 12, 2026 | Fix HOUSE flat-roof grouping - buildings with flat roof fallback now route to Highrise_walls instead of houses |
 | 0.7.2 | Feb 14, 2026 | Fix HOUSE height estimation (always 2 floors unless OSM tagged), floor guard in select_roof_type(), hipped roof near-square stability |
-| 0.7.3 | Mar 12, 2026 | Fix UV mapping for buildings with OSM height tags - floor estimation uses round() instead of int() to avoid truncation |
+| 0.7.3 | Mar 12, 2026 | Fix UV mapping: sync floors/height_m when building:levels overrides estimate, round() for height-based floor estimation |
 
 ### Changelog Files
 

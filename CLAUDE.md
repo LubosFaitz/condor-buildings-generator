@@ -194,11 +194,11 @@ At the end of every work session, **always** generate or update the changelog fi
 
 ## Current Version
 
-v0.7.3 - Fix UV mapping for buildings with OSM height tags:
-- Floor estimation from height tags used int() (truncates down) instead of round()
-- Buildings with non-exact-3m heights (e.g., height=5, height=11) got one fewer floor
-- This caused UV mapping to show fewer texture floors than the wall height warranted
-- Example: house with height=5 got 1-floor UV on a 5m wall (stretched texture)
+v0.7.3 - Fix UV mapping: floors/height_m synchronization:
+- When building:levels tag overrode estimated floors but height came from estimate, they diverged
+- Example: HOUSE with building:levels=1 got floors=1 but height_m=6.0 (from estimate) → 6m wall with 1-floor UV
+- Fix: recompute height_m = floors * 3.0 when height was estimated (not explicit)
+- Also: round() instead of int() for floor estimation from explicit height tags
 
 Previous versions:
 - v0.7.2: Fix HOUSE height estimation and roof selection

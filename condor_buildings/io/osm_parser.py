@@ -378,16 +378,29 @@ def _create_building_record(
     roof_shape = tags.get('roof:shape')
     roof_type = RoofType.from_osm_tag(roof_shape)
 
-    # Parse height
+    # Parse height and floors
+    # These must be kept in sync: height_m = floors * 3.0 (when no explicit height tag)
+    has_explicit_height = _parse_height(tags) is not None
     height_m = _parse_height(tags)
     if height_m is None:
-        # Estimate from footprint area
+        # No explicit height tag - estimate from footprint area
         estimated_floors, height_m = BuildingRecord.estimate_height(polygon.area(), category)
     else:
         estimated_floors = None
 
-    # Parse floors
+    # Parse floors (may override estimated_floors with building:levels tag)
     floors = _parse_floors(tags, height_m, estimated_floors)
+
+    # Sync height_m with floors when there's no explicit height tag.
+    # Bug fix: when building:levels overrides estimated_floors but height
+    # comes from estimate_height(), they can diverge. Example:
+    #   HOUSE with building:levels=1 (no height tag):
+    #     estimate_height() -> (2, 6.0)  [HOUSE always 2 floors]
+    #     _parse_floors() -> 1           [from building:levels tag]
+    #     Result: floors=1, height_m=6.0 -> 6m wall with 1-floor UV = stretched!
+    # Fix: recompute height_m = floors * 3.0 when height was estimated
+    if not has_explicit_height and floors != estimated_floors:
+        height_m = floors * 3.0
 
     # Parse roof pitch
     roof_pitch_deg = _parse_roof_pitch(tags)
