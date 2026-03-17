@@ -260,6 +260,25 @@ HIGHRISE_U_METERS = 24.0
 HIGHRISE_FLOOR_METERS = 3.0           # Same as DEFAULT_FLOOR_HEIGHT
 
 # =============================================================================
+# TEXTURE MAP (object group name → texture filename)
+# =============================================================================
+# Maps each mesh group to its .dds texture file.
+# Used for Blender material assignment and MTL export.
+
+TEXTURE_MAP = {
+    'houses': 'Houses_Atlas.dds',
+    'Highrise_walls': 'Highrise_Atlas.dds',
+    'industrial_walls': 'Industrial_Atlas.dds',
+    'flat_roof_1': 'Roof1.dds',
+    'flat_roof_2': 'Roof2.dds',
+    'flat_roof_3': 'Roof3.dds',
+    'flat_roof_4': 'Roof4.dds',
+    'flat_roof_5': 'Roof5.dds',
+    'flat_roof_6': 'Roof6.dds',
+    'flat_roof': 'Roof1.dds',  # merged mode, placeholder
+}
+
+# =============================================================================
 # EXPORT SETTINGS
 # =============================================================================
 
@@ -348,6 +367,11 @@ class PipelineConfig:
     # Optional: explicit path to OSM file (overrides auto-detection)
     # Used by Blender addon for downloaded OSM files
     osm_path: Optional[str] = None
+
+    # Flat roof merge: merge all flat roofs into single object with global UV projection
+    # When True: single 'flat_roof' object, UVs use world coordinates (for terrain texture)
+    # When False: 6 separate flat_roof_1..6 objects, UVs aligned to building orientation
+    flat_roof_merge: bool = False
 
     def __post_init__(self):
         """Validate configuration values."""

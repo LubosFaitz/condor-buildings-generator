@@ -109,6 +109,9 @@ class GeneratorRuntimeConfig:
     house_min_side: float = HOUSE_MIN_SIDE_LENGTH
     house_max_aspect: float = HOUSE_MAX_ASPECT_RATIO
 
+    # Flat roof merge: use global UV projection
+    flat_roof_merge: bool = False
+
 
 # Global runtime config instance (can be updated via configure_generator)
 _runtime_config = GeneratorRuntimeConfig()
@@ -127,6 +130,7 @@ def configure_generator(
     house_max_side: Optional[float] = None,
     house_min_side: Optional[float] = None,
     house_max_aspect: Optional[float] = None,
+    flat_roof_merge: Optional[bool] = None,
 ) -> None:
     """
     Configure the building generator runtime parameters.
@@ -164,6 +168,8 @@ def configure_generator(
         _runtime_config.house_min_side = house_min_side
     if house_max_aspect is not None:
         _runtime_config.house_max_aspect = house_max_aspect
+    if flat_roof_merge is not None:
+        _runtime_config.flat_roof_merge = flat_roof_merge
 
 
 def reset_generator_config() -> None:
@@ -662,7 +668,7 @@ def _generate_roof(
     # Flat roof - always use flat
     if requested_type == RoofType.FLAT:
         result.fallback_reason = RoofFallbackReason.NONE
-        return generate_flat_roof(building), RoofType.FLAT
+        return generate_flat_roof(building, use_global_uv=_runtime_config.flat_roof_merge), RoofType.FLAT
 
     # Hipped roof - check eligibility
     if requested_type == RoofType.HIPPED:
@@ -674,7 +680,7 @@ def _generate_roof(
                 f"Hipped roof fallback to flat: too many floors "
                 f"({building.floors} > {_runtime_config.hipped_max_floors})"
             )
-            return generate_flat_roof(building), RoofType.FLAT
+            return generate_flat_roof(building, use_global_uv=_runtime_config.flat_roof_merge), RoofType.FLAT
 
         # Analyze footprint (with gabled constraints for analytical hipped)
         analysis = process_footprint(
@@ -715,7 +721,7 @@ def _generate_roof(
             result.warnings.append(f"Hipped roof fallback to flat: {reason_str}")
             building.warnings.append(f"Hipped ineligible: {reason_str}")
 
-            return generate_flat_roof(building), RoofType.FLAT
+            return generate_flat_roof(building, use_global_uv=_runtime_config.flat_roof_merge), RoofType.FLAT
 
     # Gabled roof - check eligibility with strict criteria
     if requested_type == RoofType.GABLED:
@@ -727,7 +733,7 @@ def _generate_roof(
                 f"Gabled roof fallback to flat: too many floors "
                 f"({building.floors} > {gabled_max_floors})"
             )
-            return generate_flat_roof(building), RoofType.FLAT
+            return generate_flat_roof(building, use_global_uv=_runtime_config.flat_roof_merge), RoofType.FLAT
 
         # Analyze footprint with current config settings (includes house-scale check)
         analysis = process_footprint(
@@ -776,7 +782,7 @@ def _generate_roof(
                     f"aspect={analysis.aspect_ratio:.2f}]"
                 )
 
-                return generate_flat_roof(building), RoofType.FLAT
+                return generate_flat_roof(building, use_global_uv=_runtime_config.flat_roof_merge), RoofType.FLAT
         elif _is_polyskel_eligible(eligibility, analysis, building):
             # GABLED ineligible (>4 verts) → fallback to polyskel hipped
             # Better a hipped roof than a flat one for a house
@@ -803,11 +809,11 @@ def _generate_roof(
                 f"rect_like={analysis.is_rectangle_like}]"
             )
 
-            return generate_flat_roof(building), RoofType.FLAT
+            return generate_flat_roof(building, use_global_uv=_runtime_config.flat_roof_merge), RoofType.FLAT
 
     # Default to flat
     result.fallback_reason = RoofFallbackReason.NONE
-    return generate_flat_roof(building), RoofType.FLAT
+    return generate_flat_roof(building, use_global_uv=_runtime_config.flat_roof_merge), RoofType.FLAT
 
 
 def _is_polyskel_eligible(
@@ -898,7 +904,7 @@ def _generate_polyskel_roof_with_fallback(
             result.fallback_reason = RoofFallbackReason.POLYSKEL_FAILED
             building.roof_fallback_reason = RoofFallbackReason.POLYSKEL_FAILED
             result.warnings.append("Polyskel roof produced no faces, fallback to flat")
-            return generate_flat_roof(building), RoofType.FLAT
+            return generate_flat_roof(building, use_global_uv=_runtime_config.flat_roof_merge), RoofType.FLAT
 
         result.fallback_reason = RoofFallbackReason.NONE
         return roof_mesh, RoofType.HIPPED
@@ -912,7 +918,7 @@ def _generate_polyskel_roof_with_fallback(
         building.roof_fallback_reason = RoofFallbackReason.POLYSKEL_FAILED
         result.warnings.append(f"Polyskel roof failed: {e}, fallback to flat")
         building.warnings.append(f"Polyskel failed: {e}")
-        return generate_flat_roof(building), RoofType.FLAT
+        return generate_flat_roof(building, use_global_uv=_runtime_config.flat_roof_merge), RoofType.FLAT
 
 
 def _eligibility_reason(

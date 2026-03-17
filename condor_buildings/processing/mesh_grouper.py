@@ -45,14 +45,16 @@ class MeshGrouper:
     This ensures each group uses a single texture atlas for efficient rendering.
     """
 
-    def __init__(self, num_flat_roof_groups: int = 6):
+    def __init__(self, num_flat_roof_groups: int = 6, flat_roof_merge: bool = False):
         """
         Initialize mesh grouper.
 
         Args:
             num_flat_roof_groups: Number of flat roof texture groups (default 6)
+            flat_roof_merge: If True, merge all flat roofs into single object
         """
-        self.num_flat_roof_groups = num_flat_roof_groups
+        self.flat_roof_merge = flat_roof_merge
+        self.num_flat_roof_groups = 1 if flat_roof_merge else num_flat_roof_groups
 
         # Pitched buildings: walls + roofs combined
         self.houses = MeshData()
@@ -166,8 +168,11 @@ class MeshGrouper:
             'industrial_walls': self.industrial_walls,
         }
 
-        for i, roof in enumerate(self.flat_roofs):
-            groups[f'flat_roof_{i + 1}'] = roof
+        if self.flat_roof_merge:
+            groups['flat_roof'] = self.flat_roofs[0]
+        else:
+            for i, roof in enumerate(self.flat_roofs):
+                groups[f'flat_roof_{i + 1}'] = roof
 
         return groups
 

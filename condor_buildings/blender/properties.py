@@ -179,6 +179,12 @@ class CondorBuildingsProperties(PropertyGroup):
         default=False,
     )
 
+    flat_roof_merge: BoolProperty(
+        name="Merge Flat Roofs",
+        description="Merge all flat roofs into a single object with global UV projection (for terrain texture mapping)",
+        default=False,
+    )
+
     # --- House-Scale Constraints (Advanced) ---
 
     house_max_area: FloatProperty(

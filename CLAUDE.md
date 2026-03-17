@@ -67,6 +67,7 @@ output/
 | `--verbose` | Enable debug logging |
 | `--roof-selection-mode` | `geometry` (default) or `osm_tags_only` |
 | `--random-hipped` | Mix 50% gabled / 50% hipped for testing |
+| `--flat-roof-merge` | Merge flat roofs into single object with global UV (terrain texture) |
 | `--debug-osm-id <id>` | Process single building by OSM ID |
 
 ## Project Structure
@@ -168,7 +169,7 @@ result = download_osm_for_patch(metadata, output_dir="./", filename_prefix="map"
 
 ```bash
 # From project root
-powershell -Command "Compress-Archive -Path 'condor_buildings' -DestinationPath 'condor_buildings_v0.7.3.zip' -Force"
+powershell -Command "Compress-Archive -Path 'condor_buildings' -DestinationPath 'condor_buildings_v0.8.0.zip' -Force"
 ```
 
 ## Runtime Configuration (v0.6.1+)
@@ -194,13 +195,18 @@ At the end of every work session, **always** generate or update the changelog fi
 
 ## Current Version
 
-v0.7.3 - Fix UV mapping: floors/height_m synchronization:
-- When building:levels tag overrode estimated floors but height came from estimate, they diverged
-- Example: HOUSE with building:levels=1 got floors=1 but height_m=6.0 (from estimate) → 6m wall with 1-floor UV
-- Fix: recompute height_m = floors * 3.0 when height was estimated (not explicit)
-- Also: round() instead of int() for floor estimation from explicit height tags
+v0.8.0 - Blender material assignment with textures:
+- Auto-creates Principled BSDF materials with Image Texture for each imported object
+- Texture mapping: houses→Houses_Atlas.dds, Highrise_walls→Highrise_Atlas.dds, flat_roof_1..6→Roof1..6.dds, industrial_walls→Industrial_Atlas.dds
+- Textures loaded from Working/Autogen/Texture/ (Condor landscape folder)
+- Materials reused across patches (no duplicates)
+- If texture .dds not found, material created without image (user assigns manually)
 
 Previous versions:
+- v0.7.6: Flat roof merge option (terrain texture mode)
+- v0.7.5: Flat roof UV alignment: rotate UVs to building orientation
+- v0.7.4: Flat roof UV mapping: planar projection (1m = UV 0-1)
+- v0.7.3: Fix UV mapping: floors/height_m synchronization
 - v0.7.2: Fix HOUSE height estimation and roof selection
 - v0.7.1: Fix HOUSE flat-roof grouping (route to Highrise_walls instead of houses)
 - v0.7.0: Highrise wall system (Highrise_atlas.dds 2048x12288, multi-floor quads, merged Highrise_walls)

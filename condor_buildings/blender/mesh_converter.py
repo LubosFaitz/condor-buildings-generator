@@ -5,14 +5,18 @@ Converts MeshData instances from the pipeline to Blender mesh objects.
 Handles vertex conversion, face indexing, and UV coordinate mapping.
 """
 
+import os
+
 import bpy
 from typing import List, Optional, Dict
 
 # Import MeshData type for type hints (conditional to allow testing outside Blender)
 try:
     from ..models.mesh import MeshData
+    from ..config import TEXTURE_MAP
 except ImportError:
     MeshData = None
+    TEXTURE_MAP = {}
 
 
 def meshdata_to_blender(
@@ -101,6 +105,93 @@ def _add_uv_layer(mesh: bpy.types.Mesh, mesh_data) -> None:
                     if 0 <= uv_idx < len(mesh_data.uvs):
                         uv = mesh_data.uvs[uv_idx]
                         uv_layer.data[loop_idx].uv = (uv[0], uv[1])
+
+
+def _create_material(
+    name: str,
+    texture_path: Optional[str] = None
+) -> bpy.types.Material:
+    """
+    Create a Principled BSDF material with optional Image Texture.
+
+    Settings match Wiek's reference: Principled BSDF defaults,
+    Image Texture with Linear interpolation, Flat projection,
+    Repeat extension, sRGB color space, Straight alpha.
+
+    Args:
+        name: Material name
+        texture_path: Path to .dds texture file (None = no image)
+
+    Returns:
+        Created Blender material
+    """
+    mat = bpy.data.materials.new(name=name)
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+
+    # Get the default Principled BSDF (already created by use_nodes=True)
+    principled = nodes.get("Principled BSDF")
+
+    if texture_path and os.path.isfile(texture_path):
+        # Create Image Texture node
+        tex_node = nodes.new(type='ShaderNodeTexImage')
+        tex_node.location = (-300, 300)
+
+        # Load image
+        image = bpy.data.images.load(texture_path)
+        image.colorspace_settings.name = 'sRGB'
+        image.alpha_mode = 'STRAIGHT'
+        tex_node.image = image
+
+        # Settings: Linear interpolation, Flat projection, Repeat
+        tex_node.interpolation = 'Linear'
+        tex_node.projection = 'FLAT'
+        tex_node.extension = 'REPEAT'
+
+        # Connect Color → Base Color
+        links.new(tex_node.outputs['Color'], principled.inputs['Base Color'])
+
+    return mat
+
+
+def _assign_material(
+    obj: bpy.types.Object,
+    group_name: str,
+    texture_dir: Optional[str] = None
+) -> None:
+    """
+    Assign a material to a Blender object based on its group name.
+
+    Reuses existing materials if already created (avoids duplicates
+    when importing multiple patches).
+
+    Args:
+        obj: Blender object to assign material to
+        group_name: Mesh group name (e.g., 'houses', 'flat_roof_1')
+        texture_dir: Directory where .dds textures are located
+    """
+    texture_filename = TEXTURE_MAP.get(group_name)
+    if not texture_filename:
+        return
+
+    mat_name = f"condor_{group_name}"
+
+    # Reuse existing material if already created
+    if mat_name in bpy.data.materials:
+        mat = bpy.data.materials[mat_name]
+    else:
+        # Build texture path
+        texture_path = None
+        if texture_dir:
+            candidate = os.path.join(texture_dir, texture_filename)
+            if os.path.isfile(candidate):
+                texture_path = candidate
+
+        mat = _create_material(mat_name, texture_path)
+
+    # Assign material to object
+    obj.data.materials.append(mat)
 
 
 def create_buildings_collection(
@@ -205,7 +296,8 @@ def cleanup_buildings_collection(name: str = "Condor Buildings") -> int:
 
 def import_grouped_meshes_to_blender(
     grouped_meshes: Dict,  # Dict[str, MeshData]
-    collection_name: str = "Condor Buildings"
+    collection_name: str = "Condor Buildings",
+    texture_dir: Optional[str] = None
 ) -> List[bpy.types.Object]:
     """
     Import grouped meshes to Blender as separate named objects.
@@ -214,9 +306,13 @@ def import_grouped_meshes_to_blender(
     object with the group name. This matches the OBJ export format with
     multiple 'o' objects.
 
+    Each object gets a Principled BSDF material with Image Texture
+    pointing to the corresponding .dds file (if found in texture_dir).
+
     Args:
         grouped_meshes: Dictionary mapping group name to MeshData
         collection_name: Name for the collection to hold buildings
+        texture_dir: Directory containing .dds textures (e.g., Working/Autogen/Texture/)
 
     Returns:
         List of created Blender objects
@@ -241,6 +337,10 @@ def import_grouped_meshes_to_blender(
             collection=collection,
             use_osm_id=False
         )
+
+        # Assign material with texture
+        _assign_material(obj, group_name, texture_dir)
+
         objects.append(obj)
 
     return objects

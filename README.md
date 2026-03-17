@@ -1,6 +1,6 @@
 # Condor Buildings Generator
 
-[![Version](https://img.shields.io/badge/version-0.7.3-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
+[![Version](https://img.shields.io/badge/version-0.8.0-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org/)
 [![Blender](https://img.shields.io/badge/blender-4.0+-orange.svg)](https://www.blender.org/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
@@ -30,7 +30,7 @@ python -m condor_buildings.main \
 
 ### Option 2: Blender Addon (v0.5.0+)
 
-1. Download `condor_buildings_v0.7.3.zip` from releases
+1. Download `condor_buildings_v0.8.0.zip` from releases
 2. In Blender: Edit > Preferences > Add-ons > Install
 3. Select the ZIP file
 4. Enable "Condor Buildings Generator" addon
@@ -40,6 +40,18 @@ python -m condor_buildings.main \
 8. Select a landscape from the dropdown
 9. Set patch range (X/Y min/max) or enable single patch mode
 10. Click "Generate Buildings"
+
+**New in v0.8.0:**
+- **Automatic Blender materials**: Each imported object now receives a Principled BSDF material with the correct .dds texture loaded as Image Texture on Base Color. Textures are loaded from `Working/Autogen/Texture/` in the Condor landscape folder. Materials are reused across patches to avoid duplicates. If a texture file is not found, the material is created without an image (pink in viewport, user assigns manually).
+
+**New in v0.7.6:**
+- **Flat roof merge option**: New `--flat-roof-merge` CLI flag and "Merge Flat Roofs" Blender checkbox. When enabled, all flat roofs are merged into a single `flat_roof` object with global UV projection (world coordinates as UVs). Useful for mapping terrain texture onto flat roofs. When disabled, v0.7.5 behavior is unchanged.
+
+**New in v0.7.5:**
+- **Flat roof UV alignment**: Flat roof UVs are now rotated to align with each building's longest edge instead of using global world X/Y projection. UVs are centered on the building centroid. This breaks visual uniformity across differently-oriented buildings while keeping the same 1m = 1 UV scale.
+
+**New in v0.7.4:**
+- **Flat roof UV mapping**: Flat roofs (1-6) now use planar projection where 1 meter in world space = UV 0-1. Textures tile in all directions at 1m intervals. Previously used atlas-based UV mapping with only X-axis tiling.
 
 **New in v0.7.3:**
 - **Fix UV mapping (floors/height sync)**: When a building had a `building:levels` OSM tag but no `height` tag, `floors` came from the tag while `height_m` came from the category estimate — they could diverge, causing wall textures to show the wrong number of floor sections. Now `height_m` is recomputed to match `floors` when height was estimated. Also fixes `int()` → `round()` truncation for explicit height tags.
@@ -1151,6 +1163,7 @@ python -m condor_buildings.main \
 |-----------|-------------|
 | `--debug-osm-id <id>` | Process only a single building by OSM ID |
 | `--random-hipped` | Randomly assign hipped to 50% of eligible buildings (for visual testing) |
+| `--flat-roof-merge` | Merge all flat roofs into single object with global UV projection (for terrain texture) |
 
 ### Input Files
 
@@ -1248,9 +1261,9 @@ The significant increase in flat roofs (from 11.9% in v0.1.0 to 66.6% in v0.3.4)
 
 #### 1. MTL File Generation
 
-Generate MTL file with texture references for Condor:
-- Material definitions for walls and roofs
-- Texture file references
+Generate MTL file alongside OBJ exports for Condor:
+- ~~Blender material assignment~~ ✓ (v0.8.0 - Principled BSDF + Image Texture per object)
+- MTL file with `usemtl` directives in OBJ export (pending)
 
 #### 2. Texture Atlas Creation
 
@@ -1354,6 +1367,10 @@ Condor 3D (x, y, z)
 | 0.7.1 | Feb 12, 2026 | Fix HOUSE flat-roof grouping - buildings with flat roof fallback now route to Highrise_walls instead of houses |
 | 0.7.2 | Feb 14, 2026 | Fix HOUSE height estimation (always 2 floors unless OSM tagged), floor guard in select_roof_type(), hipped roof near-square stability |
 | 0.7.3 | Mar 12, 2026 | Fix UV mapping: sync floors/height_m when building:levels overrides estimate, round() for height-based floor estimation |
+| 0.7.4 | Mar 13, 2026 | Flat roof UV mapping: planar projection where 1m world space = UV 0-1, textures tile in all directions |
+| 0.7.5 | Mar 16, 2026 | Flat roof UV alignment: UVs rotated to building's longest edge, centered on centroid |
+| 0.7.6 | Mar 16, 2026 | Flat roof merge option: `--flat-roof-merge` flag merges all flat roofs into single object with global UV projection (for terrain texture) |
+| 0.8.0 | Mar 17, 2026 | Blender material assignment: auto-creates Principled BSDF + Image Texture materials per object, textures from Working/Autogen/Texture/ |
 
 ### Changelog Files
 

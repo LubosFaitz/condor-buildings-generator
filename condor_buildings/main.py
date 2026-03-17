@@ -37,6 +37,7 @@ from .generators.building_generator import (
     generate_building_lod1,
     generate_building_separated,
     select_roof_type,
+    configure_generator,
 )
 from .models.building import RoofType
 
@@ -367,10 +368,13 @@ def run_pipeline(
     # Step 6: Process buildings using MeshGrouper for texture-based grouping
     logger.info("Processing buildings")
 
+    # Configure generator with flat_roof_merge setting
+    configure_generator(flat_roof_merge=config.flat_roof_merge)
+
     # Create mesh groupers for LOD0 and LOD1
     # Groups: houses, apartment_walls, commercial_walls, industrial_walls, flat_roof_1..6
-    grouper_lod0 = MeshGrouper(num_flat_roof_groups=6)
-    grouper_lod1 = MeshGrouper(num_flat_roof_groups=6)
+    grouper_lod0 = MeshGrouper(num_flat_roof_groups=6, flat_roof_merge=config.flat_roof_merge)
+    grouper_lod1 = MeshGrouper(num_flat_roof_groups=6, flat_roof_merge=config.flat_roof_merge)
 
     fallback_reasons: Dict[str, int] = {}
     vertex_count_stats: Dict[str, int] = {
@@ -812,6 +816,13 @@ def main():
         help='Randomly assign hipped roof to 50%% of eligible buildings (for testing)'
     )
 
+    # Flat roof merge: single object with global UV projection
+    parser.add_argument(
+        '--flat-roof-merge',
+        action='store_true',
+        help='Merge all flat roofs into single object with global UV projection (for terrain texture)'
+    )
+
     parser.add_argument(
         '--version',
         action='version',
@@ -855,6 +866,7 @@ def main():
         debug_osm_id=args.debug_osm_id,
         random_hipped=args.random_hipped,
         roof_selection_mode=roof_mode,
+        flat_roof_merge=args.flat_roof_merge,
     )
 
     try:

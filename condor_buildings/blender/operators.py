@@ -159,6 +159,7 @@ class CONDOR_OT_import_buildings(Operator):
             house_max_side=props.house_max_side,
             house_min_side=props.house_min_side,
             house_max_aspect=props.house_max_aspect,
+            flat_roof_merge=props.flat_roof_merge,
         )
 
         # Process patches
@@ -252,6 +253,8 @@ class CONDOR_OT_import_buildings(Operator):
                     # Advanced geometry constraints
                     gabled_min_rectangularity=props.gabled_min_rectangularity,
                     polyskel_max_vertices=props.polyskel_max_vertices,
+                    # Flat roof merge
+                    flat_roof_merge=props.flat_roof_merge,
                 )
 
                 # Override OSM path in config
@@ -278,12 +281,16 @@ class CONDOR_OT_import_buildings(Operator):
                     collection_name = f"Condor_{props.landscape_name}_{patch_id}"
                     cleanup_buildings_collection(collection_name)
 
+                    # Texture directory: Working/Autogen/Texture/
+                    texture_dir = os.path.join(paths['autogen'], "Texture")
+
                     # Use new grouped meshes (v0.6.3+)
                     if props.output_lod in ('LOD0', 'BOTH') and result.grouped_lod0:
                         try:
                             objects = import_grouped_meshes_to_blender(
                                 result.grouped_lod0,
-                                collection_name=collection_name
+                                collection_name=collection_name,
+                                texture_dir=texture_dir
                             )
                             total_objects.extend(objects)
                             total_buildings += len(objects)
@@ -294,7 +301,8 @@ class CONDOR_OT_import_buildings(Operator):
                         try:
                             objects = import_grouped_meshes_to_blender(
                                 result.grouped_lod1,
-                                collection_name=collection_name
+                                collection_name=collection_name,
+                                texture_dir=texture_dir
                             )
                             total_objects.extend(objects)
                             total_buildings += len(objects)
@@ -309,7 +317,8 @@ class CONDOR_OT_import_buildings(Operator):
                         try:
                             import_grouped_meshes_to_blender(
                                 result.grouped_lod1,
-                                collection_name=collection_name_lod1
+                                collection_name=collection_name_lod1,
+                                texture_dir=texture_dir
                             )
                         except Exception as e:
                             errors.append(f"Patch {patch_id}: LOD1 import failed: {e}")

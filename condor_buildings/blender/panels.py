@@ -148,6 +148,7 @@ class CONDOR_PT_roof_options_panel(Panel):
 
         layout.prop(props, "roof_selection_mode", text="")
         layout.prop(props, "random_hipped")
+        layout.prop(props, "flat_roof_merge")
 
         # Help text
         if props.roof_selection_mode == 'GEOMETRY':
