@@ -67,7 +67,7 @@ class MeshGrouper:
 
         # Flat roofs distributed across multiple texture groups
         self.flat_roofs: List[MeshData] = [
-            MeshData() for _ in range(num_flat_roof_groups)
+            MeshData() for _ in range(self.num_flat_roof_groups)
         ]
 
         # Statistics

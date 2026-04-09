@@ -169,7 +169,7 @@ result = download_osm_for_patch(metadata, output_dir="./", filename_prefix="map"
 
 ```bash
 # From project root
-powershell -Command "Compress-Archive -Path 'condor_buildings' -DestinationPath 'condor_buildings_v0.8.0.zip' -Force"
+powershell -Command "Compress-Archive -Path 'condor_buildings' -DestinationPath 'condor_buildings_v0.8.3.zip' -Force"
 ```
 
 ## Runtime Configuration (v0.6.1+)
@@ -195,12 +195,19 @@ At the end of every work session, **always** generate or update the changelog fi
 
 ## Current Version
 
-v0.8.0 - Blender material assignment with textures:
-- Auto-creates Principled BSDF materials with Image Texture for each imported object
-- Texture mapping: houses→Houses_Atlas.dds, Highrise_walls→Highrise_Atlas.dds, flat_roof_1..6→Roof1..6.dds, industrial_walls→Industrial_Atlas.dds
-- Textures loaded from Working/Autogen/Texture/ (Condor landscape folder)
-- Materials reused across patches (no duplicates)
-- If texture .dds not found, material created without image (user assigns manually)
+v0.8.3 - Internal consistency fixes (from Codex review):
+- Deterministic seeds: replace hash(osm_id) with hashlib.sha256 for stable output across processes
+- floor_z_epsilon passthrough: solver now uses configurable value instead of hardcoded 0.3
+- CLI config sync: all generator parameters now flow from PipelineConfig to configure_generator()
+- Fix roof_direction_stats: use enum values directly (was silently undercounting longest_axis_heuristic)
+- Fix duplicate MeshData.is_empty(): remove shadowing second definition
+- Fix MeshGrouper flat_roofs array size in merge mode
+
+Previous: v0.8.2 - Texture assignment diagnostics and robustness
+
+Previous: v0.8.1 - Fix texture path (Textures folder)
+
+Previous: v0.8.0 - Blender material assignment with textures
 
 Previous versions:
 - v0.7.6: Flat roof merge option (terrain texture mode)

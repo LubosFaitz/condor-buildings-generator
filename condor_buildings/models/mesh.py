@@ -249,10 +249,6 @@ class MeshData:
         self.faces.clear()
         self.face_uvs.clear()
 
-    def is_empty(self) -> bool:
-        """Check if mesh has no geometry."""
-        return len(self.vertices) == 0
-
     def validate(self) -> List[str]:
         """
         Validate mesh integrity.

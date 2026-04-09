@@ -39,7 +39,7 @@ from .generators.building_generator import (
     select_roof_type,
     configure_generator,
 )
-from .models.building import RoofType
+from .models.building import RoofType, RoofDirectionSource
 
 
 @dataclass
@@ -206,9 +206,7 @@ def run_pipeline(
     errors: List[str] = []
     output_files: List[str] = []
     roof_direction_stats = {
-        'osm_tag': 0,
-        'longest_axis': 0,
-        'default': 0,
+        source.value: 0 for source in RoofDirectionSource
     }
 
     # Create output directory
@@ -276,7 +274,7 @@ def run_pipeline(
     # Step 4: Build spatial index
     logger.info("Building spatial index")
     spatial_index = GridSpatialIndex(terrain.triangles)
-    floor_z_solver = FloorZSolver(terrain, spatial_index)
+    floor_z_solver = FloorZSolver(terrain, spatial_index, floor_z_epsilon=config.floor_z_epsilon)
 
     # Step 5: Parse OSM buildings
     logger.info("Parsing OSM buildings")
@@ -368,8 +366,20 @@ def run_pipeline(
     # Step 6: Process buildings using MeshGrouper for texture-based grouping
     logger.info("Processing buildings")
 
-    # Configure generator with flat_roof_merge setting
-    configure_generator(flat_roof_merge=config.flat_roof_merge)
+    # Configure generator with all pipeline config parameters
+    configure_generator(
+        gable_height=config.gable_height,
+        roof_overhang_lod0=config.roof_overhang_lod0,
+        floor_z_epsilon=config.floor_z_epsilon,
+        gabled_max_floors=config.gabled_max_floors,
+        gabled_min_rectangularity=config.gabled_min_rectangularity,
+        polyskel_max_vertices=config.polyskel_max_vertices,
+        house_max_area=config.house_max_footprint_area,
+        house_max_side=config.house_max_side_length,
+        house_min_side=config.house_min_side_length,
+        house_max_aspect=config.house_max_aspect_ratio,
+        flat_roof_merge=config.flat_roof_merge,
+    )
 
     # Create mesh groupers for LOD0 and LOD1
     # Groups: houses, apartment_walls, commercial_walls, industrial_walls, flat_roof_1..6
@@ -443,7 +453,7 @@ def run_pipeline(
                     building.roof_type = RoofType.HIPPED
 
             # Update roof direction source stats
-            source = building.roof_direction_source.value.lower()
+            source = building.roof_direction_source.value
             if source in roof_direction_stats:
                 roof_direction_stats[source] += 1
 

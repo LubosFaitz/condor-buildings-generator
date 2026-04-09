@@ -281,8 +281,10 @@ class CONDOR_OT_import_buildings(Operator):
                     collection_name = f"Condor_{props.landscape_name}_{patch_id}"
                     cleanup_buildings_collection(collection_name)
 
-                    # Texture directory: Working/Autogen/Texture/
-                    texture_dir = os.path.join(paths['autogen'], "Texture")
+                    # Texture directory: Working/Autogen/Textures/
+                    texture_dir = os.path.join(paths['autogen'], "Textures")
+                    print(f"[Condor] Texture directory: {texture_dir}")
+                    print(f"[Condor] Texture dir exists: {os.path.isdir(texture_dir)}")
 
                     # Use new grouped meshes (v0.6.3+)
                     if props.output_lod in ('LOD0', 'BOTH') and result.grouped_lod0:
@@ -341,9 +343,14 @@ class CONDOR_OT_import_buildings(Operator):
                 self.report({'WARNING'}, f"... and {len(errors) - 5} more errors")
 
         if patches_processed > 0:
+            # Check texture status for diagnostics
+            tex_ok = sum(1 for m in bpy.data.materials if m.name.startswith("condor_") and m.node_tree and any(n.type == 'TEX_IMAGE' and n.image for n in m.node_tree.nodes))
+            tex_total = sum(1 for m in bpy.data.materials if m.name.startswith("condor_"))
+            tex_msg = f" | Textures: {tex_ok}/{tex_total}" if tex_total > 0 else ""
+
             self.report(
                 {'INFO'},
-                f"Generated {total_buildings} buildings from {patches_processed} patches in {elapsed_ms}ms"
+                f"Generated {total_buildings} objects from {patches_processed} patches in {elapsed_ms}ms{tex_msg}"
             )
             return {'FINISHED'}
         else:

@@ -44,7 +44,8 @@ class FloorZSolver:
         self,
         terrain: TerrainMesh,
         spatial_index: Optional[GridSpatialIndex] = None,
-        sample_spacing: float = 5.0
+        sample_spacing: float = 5.0,
+        floor_z_epsilon: float = FLOOR_Z_EPSILON
     ):
         """
         Initialize solver.
@@ -53,9 +54,11 @@ class FloorZSolver:
             terrain: Terrain mesh
             spatial_index: Optional pre-built spatial index
             sample_spacing: Distance between sample points (meters)
+            floor_z_epsilon: Offset below terrain to avoid z-fighting
         """
         self.terrain = terrain
         self.sample_spacing = sample_spacing
+        self.floor_z_epsilon = floor_z_epsilon
 
         # Build spatial index if not provided
         if spatial_index is not None:
@@ -143,7 +146,7 @@ class FloorZSolver:
         max_z = max(z_values)
 
         # Apply epsilon offset (slightly below terrain to avoid z-fighting)
-        floor_z = min_z - FLOOR_Z_EPSILON
+        floor_z = min_z - self.floor_z_epsilon
 
         return FloorZResult(
             floor_z=floor_z,

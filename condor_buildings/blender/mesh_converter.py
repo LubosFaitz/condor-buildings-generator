@@ -133,26 +133,60 @@ def _create_material(
     # Get the default Principled BSDF (already created by use_nodes=True)
     principled = nodes.get("Principled BSDF")
 
-    if texture_path and os.path.isfile(texture_path):
-        # Create Image Texture node
-        tex_node = nodes.new(type='ShaderNodeTexImage')
-        tex_node.location = (-300, 300)
+    if texture_path:
+        if not os.path.isfile(texture_path):
+            print(f"[Condor] WARNING: texture file not found: {texture_path}")
+        else:
+            print(f"[Condor] Loading texture: {texture_path}")
+            # Create Image Texture node
+            tex_node = nodes.new(type='ShaderNodeTexImage')
+            tex_node.location = (-300, 300)
 
-        # Load image
-        image = bpy.data.images.load(texture_path)
-        image.colorspace_settings.name = 'sRGB'
-        image.alpha_mode = 'STRAIGHT'
-        tex_node.image = image
+            # Load image
+            image = bpy.data.images.load(texture_path)
+            image.colorspace_settings.name = 'sRGB'
+            image.alpha_mode = 'STRAIGHT'
+            tex_node.image = image
 
-        # Settings: Linear interpolation, Flat projection, Repeat
-        tex_node.interpolation = 'Linear'
-        tex_node.projection = 'FLAT'
-        tex_node.extension = 'REPEAT'
+            # Settings: Linear interpolation, Flat projection, Repeat
+            tex_node.interpolation = 'Linear'
+            tex_node.projection = 'FLAT'
+            tex_node.extension = 'REPEAT'
 
-        # Connect Color → Base Color
-        links.new(tex_node.outputs['Color'], principled.inputs['Base Color'])
+            # Connect Color → Base Color
+            links.new(tex_node.outputs['Color'], principled.inputs['Base Color'])
+    else:
+        print(f"[Condor] Material '{name}': no texture path provided")
 
     return mat
+
+
+def _find_texture_file(texture_dir: str, texture_filename: str) -> Optional[str]:
+    """
+    Find a texture file in directory with case-insensitive fallback.
+
+    Args:
+        texture_dir: Directory to search in
+        texture_filename: Expected filename (e.g., 'Houses_Atlas.dds')
+
+    Returns:
+        Full path to found file, or None
+    """
+    # Direct match first
+    candidate = os.path.join(texture_dir, texture_filename)
+    if os.path.isfile(candidate):
+        return candidate
+
+    # Case-insensitive fallback (handles OneDrive, network drives, etc.)
+    if os.path.isdir(texture_dir):
+        target_lower = texture_filename.lower()
+        for entry in os.listdir(texture_dir):
+            if entry.lower() == target_lower:
+                match = os.path.join(texture_dir, entry)
+                print(f"[Condor] Case-insensitive match: '{entry}' for '{texture_filename}'")
+                return match
+
+    return None
 
 
 def _assign_material(
@@ -181,12 +215,23 @@ def _assign_material(
     if mat_name in bpy.data.materials:
         mat = bpy.data.materials[mat_name]
     else:
-        # Build texture path
+        # Build texture path with diagnostic logging
         texture_path = None
         if texture_dir:
-            candidate = os.path.join(texture_dir, texture_filename)
-            if os.path.isfile(candidate):
-                texture_path = candidate
+            texture_path = _find_texture_file(texture_dir, texture_filename)
+            if not texture_path:
+                print(f"[Condor] Texture NOT FOUND: '{texture_filename}' in '{texture_dir}'")
+                if os.path.isdir(texture_dir):
+                    contents = os.listdir(texture_dir)
+                    print(f"[Condor]   Directory contains {len(contents)} files: {contents[:20]}")
+                else:
+                    print(f"[Condor]   Directory does NOT exist: '{texture_dir}'")
+                    # Check parent directory
+                    parent = os.path.dirname(texture_dir)
+                    if os.path.isdir(parent):
+                        print(f"[Condor]   Parent '{parent}' contains: {os.listdir(parent)[:20]}")
+        else:
+            print(f"[Condor] No texture_dir provided for '{group_name}'")
 
         mat = _create_material(mat_name, texture_path)
 
@@ -312,7 +357,7 @@ def import_grouped_meshes_to_blender(
     Args:
         grouped_meshes: Dictionary mapping group name to MeshData
         collection_name: Name for the collection to hold buildings
-        texture_dir: Directory containing .dds textures (e.g., Working/Autogen/Texture/)
+        texture_dir: Directory containing .dds textures (e.g., Working/Autogen/Textures/)
 
     Returns:
         List of created Blender objects

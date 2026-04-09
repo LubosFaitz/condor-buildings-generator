@@ -1,6 +1,6 @@
 # Condor Buildings Generator
 
-[![Version](https://img.shields.io/badge/version-0.8.0-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
+[![Version](https://img.shields.io/badge/version-0.8.3-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org/)
 [![Blender](https://img.shields.io/badge/blender-4.0+-orange.svg)](https://www.blender.org/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
@@ -30,7 +30,7 @@ python -m condor_buildings.main \
 
 ### Option 2: Blender Addon (v0.5.0+)
 
-1. Download `condor_buildings_v0.8.0.zip` from releases
+1. Download `condor_buildings_v0.8.3.zip` from releases
 2. In Blender: Edit > Preferences > Add-ons > Install
 3. Select the ZIP file
 4. Enable "Condor Buildings Generator" addon
@@ -41,8 +41,16 @@ python -m condor_buildings.main \
 9. Set patch range (X/Y min/max) or enable single patch mode
 10. Click "Generate Buildings"
 
+**New in v0.8.3:**
+- **Deterministic output**: Building seed now uses `hashlib.sha256` instead of Python's `hash()`, ensuring identical results across processes and machines.
+- **floor_z_epsilon now works**: The configurable floor Z offset is now properly passed from config/UI to the solver (was previously hardcoded to 0.3).
+- **CLI config passthrough**: All generator parameters (gable_height, max_floors, house constraints, etc.) now properly flow from `PipelineConfig` to the generator in CLI mode.
+- **Fixed roof direction stats**: Report statistics for `roof_direction_source` now correctly match enum values (was silently undercounting).
+- **Fixed duplicate `is_empty()`**: Removed second `MeshData.is_empty()` definition that shadowed the correct one.
+- **Fixed MeshGrouper allocation**: Flat roof array size now matches actual group count in merge mode.
+
 **New in v0.8.0:**
-- **Automatic Blender materials**: Each imported object now receives a Principled BSDF material with the correct .dds texture loaded as Image Texture on Base Color. Textures are loaded from `Working/Autogen/Texture/` in the Condor landscape folder. Materials are reused across patches to avoid duplicates. If a texture file is not found, the material is created without an image (pink in viewport, user assigns manually).
+- **Automatic Blender materials**: Each imported object now receives a Principled BSDF material with the correct .dds texture loaded as Image Texture on Base Color. Textures are loaded from `Working/Autogen/Textures/` in the Condor landscape folder. Materials are reused across patches to avoid duplicates. If a texture file is not found, the material is created without an image (pink in viewport, user assigns manually).
 
 **New in v0.7.6:**
 - **Flat roof merge option**: New `--flat-roof-merge` CLI flag and "Merge Flat Roofs" Blender checkbox. When enabled, all flat roofs are merged into a single `flat_roof` object with global UV projection (world coordinates as UVs). Useful for mapping terrain texture onto flat roofs. When disabled, v0.7.5 behavior is unchanged.
@@ -1370,7 +1378,11 @@ Condor 3D (x, y, z)
 | 0.7.4 | Mar 13, 2026 | Flat roof UV mapping: planar projection where 1m world space = UV 0-1, textures tile in all directions |
 | 0.7.5 | Mar 16, 2026 | Flat roof UV alignment: UVs rotated to building's longest edge, centered on centroid |
 | 0.7.6 | Mar 16, 2026 | Flat roof merge option: `--flat-roof-merge` flag merges all flat roofs into single object with global UV projection (for terrain texture) |
-| 0.8.0 | Mar 17, 2026 | Blender material assignment: auto-creates Principled BSDF + Image Texture materials per object, textures from Working/Autogen/Texture/ |
+| 0.8.3 | Apr 9, 2026 | Internal consistency fixes: deterministic seeds (hashlib), floor_z_epsilon passthrough, CLI config sync, stats fix, MeshData/MeshGrouper cleanup |
+| 0.8.2 | Apr 6, 2026 | Texture diagnostics: [Condor] console logging, case-insensitive filename fallback, texture status in info bar |
+| 0.8.1 | Mar 17, 2026 | Fix texture path: "Texture" → "Textures" (plural) |
+| 0.8.0 | Mar 17, 2026 | Blender material assignment: auto-creates Principled BSDF + Image Texture materials per object, textures from Working/Autogen/Textures/ |
+| 0.8.1 | Mar 17, 2026 | Fix texture path: folder name was "Texture" (singular), Condor uses "Textures" (plural) |
 
 ### Changelog Files
 

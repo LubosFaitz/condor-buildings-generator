@@ -8,6 +8,7 @@ Uses way_stitcher for proper handling of unordered multipolygon members.
 """
 
 import xml.etree.ElementTree as ET
+import hashlib
 from typing import List, Dict, Tuple, Optional, Set
 from dataclasses import dataclass, field
 import logging
@@ -408,8 +409,9 @@ def _create_building_record(
     # Parse roof direction
     roof_direction_deg, roof_direction_source = _parse_roof_direction(tags)
 
-    # Compute seed deterministically
-    seed = global_seed + hash(osm_id) % (2**31)
+    # Compute seed deterministically (hashlib is stable across Python processes)
+    stable_hash = int(hashlib.sha256(osm_id.encode()).hexdigest(), 16) % (2**31)
+    seed = global_seed + stable_hash
 
     return BuildingRecord(
         osm_id=osm_id,
