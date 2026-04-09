@@ -1378,11 +1378,10 @@ Condor 3D (x, y, z)
 | 0.7.4 | Mar 13, 2026 | Flat roof UV mapping: planar projection where 1m world space = UV 0-1, textures tile in all directions |
 | 0.7.5 | Mar 16, 2026 | Flat roof UV alignment: UVs rotated to building's longest edge, centered on centroid |
 | 0.7.6 | Mar 16, 2026 | Flat roof merge option: `--flat-roof-merge` flag merges all flat roofs into single object with global UV projection (for terrain texture) |
-| 0.8.3 | Apr 9, 2026 | Internal consistency fixes: deterministic seeds (hashlib), floor_z_epsilon passthrough, CLI config sync, stats fix, MeshData/MeshGrouper cleanup |
-| 0.8.2 | Apr 6, 2026 | Texture diagnostics: [Condor] console logging, case-insensitive filename fallback, texture status in info bar |
-| 0.8.1 | Mar 17, 2026 | Fix texture path: "Texture" → "Textures" (plural) |
 | 0.8.0 | Mar 17, 2026 | Blender material assignment: auto-creates Principled BSDF + Image Texture materials per object, textures from Working/Autogen/Textures/ |
 | 0.8.1 | Mar 17, 2026 | Fix texture path: folder name was "Texture" (singular), Condor uses "Textures" (plural) |
+| 0.8.2 | Apr 6, 2026 | Texture diagnostics: [Condor] console logging, case-insensitive filename fallback, texture status in info bar |
+| 0.8.3 | Apr 9, 2026 | Internal consistency fixes: deterministic seeds (hashlib), floor_z_epsilon passthrough, CLI config sync, stats fix, MeshData/MeshGrouper cleanup |
 
 ### Changelog Files
 
