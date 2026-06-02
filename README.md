@@ -1,6 +1,6 @@
 # Condor Buildings Generator
 
-[![Version](https://img.shields.io/badge/version-0.8.3-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
+[![Version](https://img.shields.io/badge/version-0.8.6-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org/)
 [![Blender](https://img.shields.io/badge/blender-4.0+-orange.svg)](https://www.blender.org/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
@@ -30,7 +30,7 @@ python -m condor_buildings.main \
 
 ### Option 2: Blender Addon (v0.5.0+)
 
-1. Download `condor_buildings_v0.8.3.zip` from releases
+1. Download `condor_buildings_v0.8.6.zip` from releases
 2. In Blender: Edit > Preferences > Add-ons > Install
 3. Select the ZIP file
 4. Enable "Condor Buildings Generator" addon
@@ -40,6 +40,15 @@ python -m condor_buildings.main \
 8. Select a landscape from the dropdown
 9. Set patch range (X/Y min/max) or enable single patch mode
 10. Click "Generate Buildings"
+
+**New in v0.8.6:**
+- **Terrain photo on flat roofs (Michel's trick, requested via Andy)**: when "Merge Flat Roofs" is on, all flat roofs merge into one `flat_roof` object textured with the **patch orthophoto** `t<patch>.dds` (the same aerial image Condor uses for the terrain, from the landscape `Textures` folder). The roof UVs are normalized to the patch (`u=(X+2880)/5760`, `v=(Y+2880)/5760`), so each roof samples the exact pixel of the photo it sits on and **blends with the terrain from the air**. The Condor MTL references it as `map_Kd Textures/t<patch>.dds`; the Blender preview also loads it (searches the landscape `Textures` folder). Validated end-to-end against Andy's real patch 004001: UVs land 1:1 on the orthophoto and roofs are seamless from above. A V-flip toggle (`FLAT_ROOF_ORTHOPHOTO_V_FLIP`, default off) is provided in case Condor samples V the other way.
+
+**New in v0.8.5:**
+- **Andy/Condor beta feedback on the export**: (1) the detailed object is now written as `o<patch>.obj` (no `_LOD0` suffix) as Condor scenery processing expects; (2) the `.mtl` references textures as `map_Kd Textures/<file>.dds` (Condor keeps `.dds` in a `Textures` subfolder) — no more manual path editing; (3) "Export Condor OBJ+MTL" now also imports the meshes into the Blender viewport when "Import to Blender" is on, so single-patch work shows the result. Validated in Condor by the beta team (materials confirmed: Spec 0, Shiny 0, RGB + alpha 1).
+
+**New in v0.8.4:**
+- **Condor-ready OBJ + MTL export**: New "Export Condor OBJ+MTL" button in the Blender plugin writes files the Condor Landscape Editor accepts with **no manual tweaking**. The output is triangulated, the axis transform is baked in (matching Blender's "Forward: X, Up: Z" export, measured empirically as `(x,y,z)→(y,−x,z)`), and a matching `.mtl` is generated with the Condor material values (`Kd 1 1 1`, `Ks 0 0 0`, `Ns 0`, `d 1`, `map_Kd <Atlas>.dds`) plus `mtllib`/`usemtl` wiring. Eliminates the manual Blender export + MTL fix-up the Condor beta team had to do on every patch. Files are saved to `Working/Autogen` for the selected LOD(s).
 
 **New in v0.8.3:**
 - **Deterministic output**: Building seed now uses `hashlib.sha256` instead of Python's `hash()`, ensuring identical results across processes and machines.
@@ -1271,7 +1280,8 @@ The significant increase in flat roofs (from 11.9% in v0.1.0 to 66.6% in v0.3.4)
 
 Generate MTL file alongside OBJ exports for Condor:
 - ~~Blender material assignment~~ ✓ (v0.8.0 - Principled BSDF + Image Texture per object)
-- MTL file with `usemtl` directives in OBJ export (pending)
+- ~~MTL file with `usemtl` directives in OBJ export~~ ✓ (v0.8.4 - `export_condor_obj_mtl()` writes Condor-ready OBJ+MTL via the "Export Condor OBJ+MTL" button)
+- Create `Industrial_Atlas.dds` (currently missing; industrial walls render untextured)
 
 #### 2. Texture Atlas Creation
 
@@ -1382,6 +1392,9 @@ Condor 3D (x, y, z)
 | 0.8.1 | Mar 17, 2026 | Fix texture path: folder name was "Texture" (singular), Condor uses "Textures" (plural) |
 | 0.8.2 | Apr 6, 2026 | Texture diagnostics: [Condor] console logging, case-insensitive filename fallback, texture status in info bar |
 | 0.8.3 | Apr 9, 2026 | Internal consistency fixes: deterministic seeds (hashlib), floor_z_epsilon passthrough, CLI config sync, stats fix, MeshData/MeshGrouper cleanup |
+| 0.8.4 | May 29, 2026 | Condor-ready OBJ+MTL export: new "Export Condor OBJ+MTL" button writes triangulated, axis-corrected (Forward X / Up Z) OBJ + matching .mtl (Spec 0, Shiny 0, RGB+alpha 1, map_Kd) to Working/Autogen — no manual Blender tweaking needed |
+| 0.8.5 | May 30, 2026 | Condor beta feedback: object named `o<patch>.obj` (no LOD0 suffix), `map_Kd Textures/<file>.dds` path prefix, and Export also imports to Blender viewport for single-patch preview |
+| 0.8.6 | Jun 1, 2026 | Terrain orthophoto on merged flat roofs (Michel's trick): `flat_roof` textured with patch `t<patch>.dds`, patch-normalized UVs so roofs blend with the aerial photo from the air; validated against Andy's real patch 004001 |
 
 ### Changelog Files
 

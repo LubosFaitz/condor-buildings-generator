@@ -13,6 +13,11 @@ from dataclasses import dataclass
 import logging
 
 from ..models.mesh import MeshData
+from ..config import (
+    CONDOR_MTL_KA, CONDOR_MTL_KD, CONDOR_MTL_KS,
+    CONDOR_MTL_NS, CONDOR_MTL_D, CONDOR_MTL_ILLUM,
+    CONDOR_TEXTURE_PREFIX,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -627,3 +632,202 @@ def validate_obj_file(filepath: str) -> List[str]:
         errors.append("File contains no faces")
 
     return errors
+
+
+# =============================================================================
+# CONDOR-READY EXPORT (OBJ + MTL)
+# =============================================================================
+
+def _condor_xform(v, axis_swap: bool):
+    """Apply the Condor axis transform: (x,y,z) -> (y,-x,z) when axis_swap."""
+    x, y, z = v
+    if axis_swap:
+        return (y, -x, z)
+    return (x, y, z)
+
+
+def _tri_fan(n: int):
+    """Yield (a, b, c) position triples that fan-triangulate an n-gon (n>=3)."""
+    for i in range(1, n - 1):
+        yield (0, i, i + 1)
+
+
+def _face_normal(p0, p1, p2):
+    """Unit normal of triangle (p0,p1,p2). Falls back to +Z if degenerate."""
+    ux, uy, uz = (p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2])
+    vx, vy, vz = (p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2])
+    nx = uy * vz - uz * vy
+    ny = uz * vx - ux * vz
+    nz = ux * vy - uy * vx
+    length = (nx * nx + ny * ny + nz * nz) ** 0.5
+    if length < 1e-12:
+        return (0.0, 0.0, 1.0)
+    return (nx / length, ny / length, nz / length)
+
+
+def export_condor_obj_mtl(
+    groups: Dict[str, MeshData],
+    obj_filepath: str,
+    texture_map: Dict[str, str],
+    comment: Optional[str] = None,
+    axis_swap: bool = True,
+    triangulate: bool = True,
+    include_normals: bool = True,
+    material_prefix: str = "",
+    texture_prefix: Optional[str] = None,
+) -> ExportStats:
+    """
+    Export grouped meshes to a Condor-ready OBJ + matching MTL.
+
+    Unlike export_mesh_groups(), this produces files the Condor Landscape Editor
+    accepts without manual tweaking in Blender:
+    - Axis transform baked in (matches Blender "Forward: X, Up: Z" export)
+    - Faces triangulated (Condor requires triangle mesh)
+    - mtllib / usemtl references wired up
+    - A .mtl written next to the .obj with Condor material values
+      (Kd 1 1 1, Ks 0 0 0, Ns 0, d 1, map_Kd <texture>.dds)
+
+    Args:
+        groups: Dict mapping object/group name to MeshData
+        obj_filepath: Output .obj path; .mtl is written alongside
+        texture_map: Dict mapping group name to texture filename (config.TEXTURE_MAP)
+        comment: Optional header comment
+        axis_swap: Apply (x,y,z)->(y,-x,z) transform (default True)
+        triangulate: Fan-triangulate n-gons (default True)
+        include_normals: Write vn and f v/vt/vn (default True)
+        material_prefix: Prefix for material names (default "")
+
+    Returns:
+        ExportStats with export statistics
+    """
+    stats = ExportStats()
+
+    if texture_prefix is None:
+        texture_prefix = CONDOR_TEXTURE_PREFIX
+
+    non_empty = [
+        (name, mesh) for name, mesh in sorted(groups.items())
+        if not mesh.is_empty()
+    ]
+
+    if not non_empty:
+        logger.warning("No non-empty mesh groups to export (Condor)")
+        return stats
+
+    out_dir = os.path.dirname(obj_filepath) or '.'
+    os.makedirs(out_dir, exist_ok=True)
+
+    base = os.path.splitext(os.path.basename(obj_filepath))[0]
+    mtl_filename = base + ".mtl"
+    mtl_filepath = os.path.join(out_dir, mtl_filename)
+
+    # ---- Write MTL ----
+    with open(mtl_filepath, 'w', encoding='utf-8') as mf:
+        mf.write("# Condor Buildings Generator MTL\n")
+        if comment:
+            mf.write(f"# {comment}\n")
+        for name, _mesh in non_empty:
+            matname = f"{material_prefix}{name}"
+            tex = texture_map.get(name)
+            mf.write(f"\nnewmtl {matname}\n")
+            mf.write("Ka {:.6f} {:.6f} {:.6f}\n".format(*CONDOR_MTL_KA))
+            mf.write("Kd {:.6f} {:.6f} {:.6f}\n".format(*CONDOR_MTL_KD))
+            mf.write("Ks {:.6f} {:.6f} {:.6f}\n".format(*CONDOR_MTL_KS))
+            mf.write(f"Ns {CONDOR_MTL_NS:.6f}\n")
+            mf.write(f"d {CONDOR_MTL_D:.6f}\n")
+            mf.write(f"illum {CONDOR_MTL_ILLUM}\n")
+            if tex:
+                mf.write(f"map_Kd {texture_prefix}{tex}\n")
+
+    # ---- Write OBJ ----
+    vertex_offset = 0
+    uv_offset = 0
+    normal_offset = 0
+
+    with open(obj_filepath, 'w', encoding='utf-8') as f:
+        f.write("# Condor Buildings Generator OBJ (Condor-ready)\n")
+        f.write(f"# Objects: {len(non_empty)}\n")
+        f.write(f"# Axis swap: {axis_swap} | Triangulated: {triangulate} | Normals: {include_normals}\n")
+        if comment:
+            f.write(f"# {comment}\n")
+        f.write(f"mtllib {mtl_filename}\n")
+
+        for group_name, mesh in non_empty:
+            f.write(f"\no {group_name}\n")
+            f.write(f"usemtl {material_prefix}{group_name}\n")
+
+            # Transformed vertices
+            tverts = [_condor_xform(v, axis_swap) for v in mesh.vertices]
+            for x, y, z in tverts:
+                f.write(f"v {x:.6f} {y:.6f} {z:.6f}\n")
+
+            has_uvs = len(mesh.uvs) > 0 and len(mesh.face_uvs) == len(mesh.faces)
+            if has_uvs:
+                for u, v in mesh.uvs:
+                    f.write(f"vt {u:.6f} {v:.6f}\n")
+
+            # Build triangulated faces (with optional per-triangle normals)
+            normals = []
+            tri_records = []  # each: (vidx3, uvidx3_or_None, nidx_or_None) 1-indexed local
+            for fi, face in enumerate(mesh.faces):
+                n = len(face)
+                if n < 3:
+                    continue
+                fuv = mesh.face_uvs[fi] if (has_uvs and fi < len(mesh.face_uvs)) else None
+                tris = _tri_fan(n) if triangulate else [tuple(range(n))]
+                for tri in tris:
+                    if len(tri) != 3:
+                        # Non-triangulated n-gon path keeps polygon as-is
+                        vidx = tuple(face[p] for p in tri)
+                        uvidx = tuple(fuv[p] for p in tri) if fuv else None
+                        tri_records.append((vidx, uvidx, None))
+                        continue
+                    a, b, c = tri
+                    vidx = (face[a], face[b], face[c])
+                    uvidx = (fuv[a], fuv[b], fuv[c]) if fuv else None
+                    nidx = None
+                    if include_normals:
+                        p0 = tverts[vidx[0] - 1]
+                        p1 = tverts[vidx[1] - 1]
+                        p2 = tverts[vidx[2] - 1]
+                        normals.append(_face_normal(p0, p1, p2))
+                        nidx = len(normals)  # 1-indexed within object
+                    tri_records.append((vidx, uvidx, nidx))
+
+            if include_normals:
+                for nx, ny, nz in normals:
+                    f.write(f"vn {nx:.6f} {ny:.6f} {nz:.6f}\n")
+
+            for vidx, uvidx, nidx in tri_records:
+                parts = []
+                for k in range(len(vidx)):
+                    vref = vidx[k] + vertex_offset
+                    if uvidx is not None:
+                        tref = uvidx[k] + uv_offset
+                        if nidx is not None:
+                            parts.append(f"{vref}/{tref}/{nidx + normal_offset}")
+                        else:
+                            parts.append(f"{vref}/{tref}")
+                    else:
+                        if nidx is not None:
+                            parts.append(f"{vref}//{nidx + normal_offset}")
+                        else:
+                            parts.append(f"{vref}")
+                f.write("f " + " ".join(parts) + "\n")
+
+            stats.total_vertices += len(mesh.vertices)
+            stats.total_uvs += len(mesh.uvs)
+            stats.total_faces += len(tri_records)
+            stats.total_buildings += 1
+
+            vertex_offset += len(mesh.vertices)
+            uv_offset += len(mesh.uvs)
+            normal_offset += len(normals)
+
+    stats.file_size_bytes = os.path.getsize(obj_filepath)
+    logger.info(
+        f"Exported Condor OBJ+MTL: {stats.total_vertices} vertices, "
+        f"{stats.total_faces} triangles, {len(non_empty)} objects -> "
+        f"{os.path.basename(obj_filepath)} + {mtl_filename}"
+    )
+    return stats

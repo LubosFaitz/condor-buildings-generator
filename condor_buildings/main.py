@@ -21,7 +21,10 @@ from typing import List, Dict, Optional
 from pathlib import Path
 
 from . import __version__
-from .config import PipelineConfig, RoofSelectionMode
+from .config import (
+    PipelineConfig, RoofSelectionMode,
+    PATCH_HALF, PATCH_SIZE, FLAT_ROOF_ORTHOPHOTO_V_FLIP,
+)
 from .projection import create_projector
 from .io.patch_metadata import load_patch_metadata
 from .io.terrain_loader import load_terrain
@@ -40,6 +43,7 @@ from .generators.building_generator import (
     configure_generator,
 )
 from .models.building import RoofType, RoofDirectionSource
+from .models.mesh import MeshData
 
 
 @dataclass
@@ -170,6 +174,37 @@ def setup_logging(verbose: bool = False, log_file: Optional[str] = None) -> None
         )
         file_handler.setFormatter(file_formatter)
         root_logger.addHandler(file_handler)
+
+
+def _apply_terrain_orthophoto_uvs(
+    groups: Dict[str, MeshData],
+    patch_half: float = PATCH_HALF,
+    patch_size: float = PATCH_SIZE,
+    v_flip: bool = FLAT_ROOF_ORTHOPHOTO_V_FLIP,
+) -> int:
+    """
+    Normalize the merged 'flat_roof' group's UVs into patch [0,1] space.
+
+    In flat_roof_merge mode the roof UVs are raw world coordinates (u=X, v=Y).
+    The Condor patch spans [-patch_half, +patch_half] in both axes, so mapping
+    u'=(X+patch_half)/patch_size, v'=(Y+patch_half)/patch_size makes the terrain
+    orthophoto (t<patch>.dds) line up 1:1 with the ground beneath each roof.
+
+    Only the 'flat_roof' group is affected (merge mode). Returns the number of
+    UVs rewritten (0 if the group is absent/empty).
+    """
+    mesh = groups.get('flat_roof')
+    if mesh is None or mesh.is_empty() or not mesh.uvs:
+        return 0
+    new_uvs = []
+    for u, v in mesh.uvs:
+        nu = (u + patch_half) / patch_size
+        nv = (v + patch_half) / patch_size
+        if v_flip:
+            nv = 1.0 - nv
+        new_uvs.append((nu, nv))
+    mesh.uvs = new_uvs
+    return len(new_uvs)
 
 
 def run_pipeline(
@@ -546,6 +581,17 @@ def run_pipeline(
     for name, mesh in lod1_groups.items():
         stats.lod1_vertices += len(mesh.vertices)
         stats.lod1_faces += len(mesh.faces)
+
+    # Step 6c: Terrain orthophoto UVs for the merged flat_roof group
+    # (Michel/Andy request). Maps the patch aerial photo t<patch>.dds onto flat
+    # roofs so they blend with the terrain when viewed from the air.
+    if config.flat_roof_merge:
+        n0 = _apply_terrain_orthophoto_uvs(lod0_groups)
+        n1 = _apply_terrain_orthophoto_uvs(lod1_groups)
+        logger.info(
+            f"Applied terrain orthophoto UVs to merged flat_roof "
+            f"(LOD0: {n0} UVs, LOD1: {n1} UVs, v_flip={FLAT_ROOF_ORTHOPHOTO_V_FLIP})"
+        )
 
     # Log optimization results
     if stats.lod0_vertices_before_optimize > 0:

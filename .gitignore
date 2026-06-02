@@ -15,6 +15,10 @@ build/
 test_data/
 output/
 
+# Datos de validación de Andy (parches reales, grandes) y atlas de texturas
+Andy-files/
+textures/
+
 # Backups y versiones previas
 backup_releases/
 
@@ -54,6 +58,9 @@ specs-v3.md
 
 # Documentación (interno)
 docs/
+
+# Instrucciones internas para Claude (no se suben a GitHub)
+CLAUDE.md
 
 # Environments
 .env

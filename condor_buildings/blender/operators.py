@@ -15,6 +15,53 @@ from bpy.types import Operator
 import os
 
 
+# =============================================================================
+# Shared helpers (used by the Condor export operator)
+# =============================================================================
+
+def resolve_condor_paths(props):
+    """Resolve Condor folder paths from properties. Returns dict or None."""
+    condor_path = bpy.path.abspath(props.condor_path)
+    landscape = props.landscape_name
+
+    paths = {
+        'landscape': os.path.join(condor_path, "Landscapes", landscape),
+        'working': os.path.join(condor_path, "Landscapes", landscape, "Working"),
+        'heightmaps': os.path.join(condor_path, "Landscapes", landscape, "Working", "Heightmaps"),
+        'autogen': os.path.join(condor_path, "Landscapes", landscape, "Working", "Autogen"),
+    }
+
+    if not os.path.isdir(paths['working']):
+        return None
+
+    if not os.path.exists(paths['autogen']):
+        os.makedirs(paths['autogen'], exist_ok=True)
+
+    return paths
+
+
+def resolve_patch_list(props):
+    """Build the list of patch IDs from properties."""
+    if props.single_patch_mode:
+        return [props.patch_id]
+
+    patches = []
+    for y in range(props.patch_y_min, props.patch_y_max + 1):
+        for x in range(props.patch_x_min, props.patch_x_max + 1):
+            patches.append(f"{x:03d}{y:03d}")
+    return patches
+
+
+def resolve_patch_files(patch_id, paths):
+    """Find h*.txt and h*.obj for a patch. Returns (txt, obj) or (None, None)."""
+    heightmaps_dir = paths['heightmaps']
+    txt_path = os.path.join(heightmaps_dir, f"h{patch_id}.txt")
+    obj_path = os.path.join(heightmaps_dir, f"h{patch_id}.obj")
+    if os.path.exists(txt_path) and os.path.exists(obj_path):
+        return txt_path, obj_path
+    return None, None
+
+
 class CONDOR_OT_import_buildings(Operator):
     """Import buildings from OSM data for Condor 3 flight simulator"""
 
@@ -116,7 +163,7 @@ class CONDOR_OT_import_buildings(Operator):
         # Import pipeline modules
         try:
             from ..main import run_pipeline
-            from ..config import PipelineConfig, RoofSelectionMode
+            from ..config import PipelineConfig, RoofSelectionMode, build_texture_map
             from ..io.patch_metadata import load_patch_metadata
             from ..generators import configure_generator
             from .mesh_converter import import_meshes_to_blender, import_grouped_meshes_to_blender, cleanup_buildings_collection
@@ -281,10 +328,17 @@ class CONDOR_OT_import_buildings(Operator):
                     collection_name = f"Condor_{props.landscape_name}_{patch_id}"
                     cleanup_buildings_collection(collection_name)
 
-                    # Texture directory: Working/Autogen/Textures/
+                    # Texture directories: building atlases live in
+                    # Working/Autogen/Textures; the per-patch orthophoto
+                    # t<patch>.dds lives in the landscape Textures folder.
                     texture_dir = os.path.join(paths['autogen'], "Textures")
+                    landscape_texture_dir = os.path.join(paths['landscape'], "Textures")
                     print(f"[Condor] Texture directory: {texture_dir}")
                     print(f"[Condor] Texture dir exists: {os.path.isdir(texture_dir)}")
+
+                    # Per-patch texture map (points merged flat_roof at t<patch>.dds)
+                    tex_map = build_texture_map(patch_id, props.flat_roof_merge)
+                    extra_dirs = [landscape_texture_dir]
 
                     # Use new grouped meshes (v0.6.3+)
                     if props.output_lod in ('LOD0', 'BOTH') and result.grouped_lod0:
@@ -292,7 +346,9 @@ class CONDOR_OT_import_buildings(Operator):
                             objects = import_grouped_meshes_to_blender(
                                 result.grouped_lod0,
                                 collection_name=collection_name,
-                                texture_dir=texture_dir
+                                texture_dir=texture_dir,
+                                texture_map=tex_map,
+                                extra_texture_dirs=extra_dirs,
                             )
                             total_objects.extend(objects)
                             total_buildings += len(objects)
@@ -304,7 +360,9 @@ class CONDOR_OT_import_buildings(Operator):
                             objects = import_grouped_meshes_to_blender(
                                 result.grouped_lod1,
                                 collection_name=collection_name,
-                                texture_dir=texture_dir
+                                texture_dir=texture_dir,
+                                texture_map=tex_map,
+                                extra_texture_dirs=extra_dirs,
                             )
                             total_objects.extend(objects)
                             total_buildings += len(objects)
@@ -320,7 +378,9 @@ class CONDOR_OT_import_buildings(Operator):
                             import_grouped_meshes_to_blender(
                                 result.grouped_lod1,
                                 collection_name=collection_name_lod1,
-                                texture_dir=texture_dir
+                                texture_dir=texture_dir,
+                                texture_map=tex_map,
+                                extra_texture_dirs=extra_dirs,
                             )
                         except Exception as e:
                             errors.append(f"Patch {patch_id}: LOD1 import failed: {e}")
@@ -406,10 +466,251 @@ class CONDOR_OT_clear_buildings(Operator):
         return {'FINISHED'}
 
 
+class CONDOR_OT_export_condor(Operator):
+    """Export Condor-ready OBJ + MTL (triangulated, axis-corrected, materials)"""
+
+    bl_idname = "condor.export_condor"
+    bl_label = "Export Condor OBJ+MTL"
+    bl_description = (
+        "Generate buildings and export Condor-ready OBJ + MTL to Working/Autogen. "
+        "Files are triangulated, axis-corrected (Forward X / Up Z) and carry a .mtl "
+        "with Condor material values - no manual tweaking in Blender required"
+    )
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        props = context.scene.condor_buildings
+        if not props.condor_path or props.landscape_name == 'NONE':
+            return False
+        if props.single_patch_mode:
+            return bool(props.patch_id)
+        return props.patch_x_max >= props.patch_x_min
+
+    def execute(self, context):
+        import time
+
+        try:
+            from ..main import run_pipeline
+            from ..config import (
+                PipelineConfig, RoofSelectionMode, TEXTURE_MAP, build_texture_map,
+                CONDOR_AXIS_SWAP, CONDOR_EXPORT_TRIANGULATE, CONDOR_EXPORT_NORMALS,
+            )
+            from ..io.patch_metadata import load_patch_metadata
+            from ..io.obj_exporter import export_condor_obj_mtl
+            from ..generators import configure_generator
+            from .osm_downloader import download_osm_for_patch
+            from .mesh_converter import import_grouped_meshes_to_blender, cleanup_buildings_collection
+        except ImportError as e:
+            self.report({'ERROR'}, f"Failed to import pipeline modules: {e}")
+            return {'CANCELLED'}
+
+        props = context.scene.condor_buildings
+
+        paths = resolve_condor_paths(props)
+        if not paths:
+            self.report({'ERROR'}, f"Invalid Condor folder structure for landscape: {props.landscape_name}")
+            return {'CANCELLED'}
+
+        patch_ids = resolve_patch_list(props)
+        if not patch_ids:
+            self.report({'ERROR'}, "No patches to process")
+            return {'CANCELLED'}
+
+        roof_mode = RoofSelectionMode.GEOMETRY
+        if props.roof_selection_mode == 'OSM_TAGS_ONLY':
+            roof_mode = RoofSelectionMode.OSM_TAGS_ONLY
+
+        configure_generator(
+            gable_height=props.gable_height,
+            hipped_height=props.gable_height,
+            roof_overhang_lod0=props.roof_overhang,
+            floor_z_epsilon=props.floor_z_epsilon,
+            gabled_max_floors=props.gabled_max_floors,
+            hipped_max_floors=props.gabled_max_floors,
+            gabled_min_rectangularity=props.gabled_min_rectangularity,
+            polyskel_max_vertices=props.polyskel_max_vertices,
+            house_max_area=props.house_max_area,
+            house_max_side=props.house_max_side,
+            house_min_side=props.house_min_side,
+            house_max_aspect=props.house_max_aspect,
+            flat_roof_merge=props.flat_roof_merge,
+        )
+
+        start_time = time.time()
+        files_written = []
+        patches_exported = 0
+        imported_objects = 0
+        errors = []
+
+        props.is_processing = True
+        try:
+            for patch_id in patch_ids:
+                props.current_patch = patch_id
+                bpy.context.view_layer.update()
+
+                txt_path, _obj_path = resolve_patch_files(patch_id, paths)
+                if not txt_path:
+                    errors.append(f"Patch {patch_id}: heightmap files not found")
+                    continue
+
+                try:
+                    metadata = load_patch_metadata(txt_path)
+                except Exception as e:
+                    errors.append(f"Patch {patch_id}: failed to load metadata: {e}")
+                    continue
+
+                # Resolve OSM data
+                osm_path = None
+                if props.osm_source == 'DOWNLOAD':
+                    download_result = download_osm_for_patch(
+                        metadata, output_dir=paths['autogen'], filename_prefix="map"
+                    )
+                    if not download_result.success:
+                        errors.append(f"Patch {patch_id}: OSM download failed: {download_result.error}")
+                        continue
+                    osm_path = download_result.filepath
+                else:
+                    for p in (
+                        os.path.join(paths['autogen'], f"map_{patch_id}.osm"),
+                        os.path.join(paths['working'], f"map_{patch_id}.osm"),
+                        os.path.join(paths['heightmaps'], f"map_{patch_id}.osm"),
+                    ):
+                        if os.path.exists(p):
+                            osm_path = p
+                            break
+                    if not osm_path:
+                        errors.append(f"Patch {patch_id}: no local OSM file found")
+                        continue
+
+                config = PipelineConfig(
+                    patch_id=patch_id,
+                    patch_dir=paths['heightmaps'],
+                    zone_number=metadata.zone_number,
+                    translate_x=metadata.translate_x,
+                    translate_y=metadata.translate_y,
+                    global_seed=props.global_seed,
+                    export_groups=True,
+                    output_dir=paths['autogen'],
+                    verbose=False,
+                    roof_selection_mode=roof_mode,
+                    random_hipped=props.random_hipped,
+                    debug_osm_id=props.debug_osm_id if props.debug_osm_id else None,
+                    house_max_footprint_area=props.house_max_area,
+                    house_max_side_length=props.house_max_side,
+                    house_min_side_length=props.house_min_side,
+                    house_max_aspect_ratio=props.house_max_aspect,
+                    gable_height=props.gable_height,
+                    roof_overhang_lod0=props.roof_overhang,
+                    floor_z_epsilon=props.floor_z_epsilon,
+                    gabled_max_floors=props.gabled_max_floors,
+                    gabled_min_rectangularity=props.gabled_min_rectangularity,
+                    polyskel_max_vertices=props.polyskel_max_vertices,
+                    flat_roof_merge=props.flat_roof_merge,
+                )
+                config.osm_path = osm_path
+
+                try:
+                    result = run_pipeline(config, output_mode="memory")
+                except Exception as e:
+                    errors.append(f"Patch {patch_id}: pipeline failed: {e}")
+                    continue
+
+                if not result.success:
+                    error_msg = "; ".join(result.report.errors) if result.report.errors else "Unknown error"
+                    errors.append(f"Patch {patch_id}: {error_msg}")
+                    continue
+
+                # Per-patch texture map: points the merged flat_roof object at the
+                # patch orthophoto t<patch>.dds (instead of the Roof1.dds placeholder).
+                tex_map = build_texture_map(patch_id, props.flat_roof_merge)
+
+                # Select which LOD groups to export
+                lods = []
+                if props.output_lod in ('LOD0', 'BOTH') and result.grouped_lod0:
+                    lods.append(("LOD0", result.grouped_lod0))
+                if props.output_lod in ('LOD1', 'BOTH') and result.grouped_lod1:
+                    lods.append(("LOD1", result.grouped_lod1))
+
+                for lod_name, groups in lods:
+                    # Condor scenery expects the main object as o<patch>.obj (no LOD0
+                    # suffix); LOD1 keeps an explicit suffix.
+                    fname = (
+                        f"o{patch_id}.obj" if lod_name == "LOD0"
+                        else f"o{patch_id}_{lod_name}.obj"
+                    )
+                    out_obj = os.path.join(paths['autogen'], fname)
+                    try:
+                        export_condor_obj_mtl(
+                            groups, out_obj, tex_map,
+                            comment=f"{lod_name} - Patch {patch_id} (Condor-ready)",
+                            axis_swap=CONDOR_AXIS_SWAP,
+                            triangulate=CONDOR_EXPORT_TRIANGULATE,
+                            include_normals=CONDOR_EXPORT_NORMALS,
+                        )
+                        files_written.append(out_obj)
+                    except Exception as e:
+                        errors.append(f"Patch {patch_id} {lod_name}: export failed: {e}")
+
+                # Optionally import into Blender for preview (single-patch friendly)
+                if props.import_to_blender:
+                    preview_groups = None
+                    if props.output_lod in ('LOD0', 'BOTH') and result.grouped_lod0:
+                        preview_groups = result.grouped_lod0
+                    elif props.output_lod == 'LOD1' and result.grouped_lod1:
+                        preview_groups = result.grouped_lod1
+
+                    if preview_groups:
+                        texture_dir = os.path.join(paths['autogen'], "Textures")
+                        landscape_texture_dir = os.path.join(paths['landscape'], "Textures")
+                        collection_name = f"Condor_{props.landscape_name}_{patch_id}"
+                        cleanup_buildings_collection(collection_name)
+                        try:
+                            objs = import_grouped_meshes_to_blender(
+                                preview_groups,
+                                collection_name=collection_name,
+                                texture_dir=texture_dir,
+                                texture_map=tex_map,
+                                extra_texture_dirs=[landscape_texture_dir],
+                            )
+                            imported_objects += len(objs)
+                        except Exception as e:
+                            errors.append(f"Patch {patch_id}: Blender import failed: {e}")
+
+                patches_exported += 1
+        finally:
+            props.is_processing = False
+            props.current_patch = ""
+
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        props.last_import_time_ms = elapsed_ms
+        props.last_patches_processed = patches_exported
+        props.last_import_buildings = imported_objects
+
+        if errors:
+            for error in errors[:5]:
+                self.report({'WARNING'}, error)
+            if len(errors) > 5:
+                self.report({'WARNING'}, f"... and {len(errors) - 5} more errors")
+
+        if files_written:
+            preview_msg = f", {imported_objects} objects in viewport" if imported_objects else ""
+            self.report(
+                {'INFO'},
+                f"Exported {len(files_written)} Condor OBJ+MTL file(s) from "
+                f"{patches_exported} patch(es) in {elapsed_ms}ms -> Working/Autogen{preview_msg}"
+            )
+            return {'FINISHED'}
+        else:
+            self.report({'ERROR'}, "No files were exported")
+            return {'CANCELLED'}
+
+
 # Registration
 _classes = [
     CONDOR_OT_import_buildings,
     CONDOR_OT_clear_buildings,
+    CONDOR_OT_export_condor,
 ]
 
 

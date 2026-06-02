@@ -120,6 +120,14 @@ class CONDOR_PT_main_panel(Panel):
         # Clear button (smaller)
         row.operator("condor.clear_buildings", text="", icon='TRASH')
 
+        # --- Export Condor button (Condor-ready OBJ+MTL) ---
+        row_exp = layout.row(align=True)
+        row_exp.scale_y = 1.5
+        sub_exp = row_exp.row(align=True)
+        sub_exp.enabled = can_import and not props.is_processing
+        sub_exp.operator("condor.export_condor", text="Export Condor OBJ+MTL", icon='EXPORT')
+        layout.label(text="Condor-ready: triangulated, axis-corrected, .mtl included", icon='CHECKMARK')
+
         # --- Statistics (after import) ---
         if props.last_import_buildings > 0:
             box = layout.box()
@@ -149,6 +157,8 @@ class CONDOR_PT_roof_options_panel(Panel):
         layout.prop(props, "roof_selection_mode", text="")
         layout.prop(props, "random_hipped")
         layout.prop(props, "flat_roof_merge")
+        if props.flat_roof_merge:
+            layout.label(text="Flat roofs use patch orthophoto t<patch>.dds", icon='IMAGE_DATA')
 
         # Help text
         if props.roof_selection_mode == 'GEOMETRY':

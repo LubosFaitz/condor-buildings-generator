@@ -192,7 +192,8 @@ def _find_texture_file(texture_dir: str, texture_filename: str) -> Optional[str]
 def _assign_material(
     obj: bpy.types.Object,
     group_name: str,
-    texture_dir: Optional[str] = None
+    texture_dirs: Optional[List[str]] = None,
+    texture_map: Optional[Dict[str, str]] = None,
 ) -> None:
     """
     Assign a material to a Blender object based on its group name.
@@ -202,36 +203,46 @@ def _assign_material(
 
     Args:
         obj: Blender object to assign material to
-        group_name: Mesh group name (e.g., 'houses', 'flat_roof_1')
-        texture_dir: Directory where .dds textures are located
+        group_name: Mesh group name (e.g., 'houses', 'flat_roof_1', 'flat_roof')
+        texture_dirs: Ordered list of directories to search for the .dds texture
+            (e.g., [Working/Autogen/Textures, Landscapes/<name>/Textures]). The
+            second is where the per-patch orthophoto t<patch>.dds lives.
+        texture_map: Optional per-run group->filename map (overrides TEXTURE_MAP).
+            Used to point the merged 'flat_roof' object at the patch orthophoto.
     """
-    texture_filename = TEXTURE_MAP.get(group_name)
+    tmap = texture_map if texture_map is not None else TEXTURE_MAP
+    texture_filename = tmap.get(group_name)
     if not texture_filename:
         return
 
-    mat_name = f"condor_{group_name}"
+    # The merged flat_roof uses a per-patch orthophoto (t<patch>.dds), so key its
+    # material on the texture name to avoid reusing one patch's photo on another.
+    if group_name == 'flat_roof':
+        mat_name = f"condor_{os.path.splitext(texture_filename)[0]}"
+    else:
+        mat_name = f"condor_{group_name}"
+
+    search_dirs = [d for d in (texture_dirs or []) if d]
 
     # Reuse existing material if already created
     if mat_name in bpy.data.materials:
         mat = bpy.data.materials[mat_name]
     else:
-        # Build texture path with diagnostic logging
+        # Search each candidate directory in order
         texture_path = None
-        if texture_dir:
-            texture_path = _find_texture_file(texture_dir, texture_filename)
-            if not texture_path:
-                print(f"[Condor] Texture NOT FOUND: '{texture_filename}' in '{texture_dir}'")
-                if os.path.isdir(texture_dir):
-                    contents = os.listdir(texture_dir)
-                    print(f"[Condor]   Directory contains {len(contents)} files: {contents[:20]}")
+        for d in search_dirs:
+            texture_path = _find_texture_file(d, texture_filename)
+            if texture_path:
+                break
+
+        if not texture_path:
+            print(f"[Condor] Texture NOT FOUND: '{texture_filename}' in {search_dirs}")
+            for d in search_dirs:
+                if os.path.isdir(d):
+                    contents = os.listdir(d)
+                    print(f"[Condor]   '{d}' contains {len(contents)} files: {contents[:20]}")
                 else:
-                    print(f"[Condor]   Directory does NOT exist: '{texture_dir}'")
-                    # Check parent directory
-                    parent = os.path.dirname(texture_dir)
-                    if os.path.isdir(parent):
-                        print(f"[Condor]   Parent '{parent}' contains: {os.listdir(parent)[:20]}")
-        else:
-            print(f"[Condor] No texture_dir provided for '{group_name}'")
+                    print(f"[Condor]   Directory does NOT exist: '{d}'")
 
         mat = _create_material(mat_name, texture_path)
 
@@ -342,22 +353,30 @@ def cleanup_buildings_collection(name: str = "Condor Buildings") -> int:
 def import_grouped_meshes_to_blender(
     grouped_meshes: Dict,  # Dict[str, MeshData]
     collection_name: str = "Condor Buildings",
-    texture_dir: Optional[str] = None
+    texture_dir: Optional[str] = None,
+    texture_map: Optional[Dict[str, str]] = None,
+    extra_texture_dirs: Optional[List[str]] = None,
 ) -> List[bpy.types.Object]:
     """
     Import grouped meshes to Blender as separate named objects.
 
-    Each group (houses, apartment_walls, etc.) becomes a separate Blender
-    object with the group name. This matches the OBJ export format with
+    Each group (houses, Highrise_walls, flat_roof, etc.) becomes a separate
+    Blender object with the group name. This matches the OBJ export format with
     multiple 'o' objects.
 
-    Each object gets a Principled BSDF material with Image Texture
-    pointing to the corresponding .dds file (if found in texture_dir).
+    Each object gets a Principled BSDF material with Image Texture pointing to the
+    corresponding .dds file (if found). Textures are searched in texture_dir first,
+    then in extra_texture_dirs (e.g., the landscape Textures folder that holds the
+    per-patch orthophoto t<patch>.dds used by the merged flat_roof object).
 
     Args:
         grouped_meshes: Dictionary mapping group name to MeshData
         collection_name: Name for the collection to hold buildings
-        texture_dir: Directory containing .dds textures (e.g., Working/Autogen/Textures/)
+        texture_dir: Primary texture directory (e.g., Working/Autogen/Textures/)
+        texture_map: Optional per-run group->filename map (overrides TEXTURE_MAP),
+            used to point 'flat_roof' at the patch orthophoto.
+        extra_texture_dirs: Additional directories to search (e.g., the landscape
+            Textures folder).
 
     Returns:
         List of created Blender objects
@@ -367,6 +386,8 @@ def import_grouped_meshes_to_blender(
 
     # Create collection for buildings
     collection = create_buildings_collection(collection_name)
+
+    search_dirs = [texture_dir] + list(extra_texture_dirs or [])
 
     # Import each group as a named object
     objects = []
@@ -384,7 +405,7 @@ def import_grouped_meshes_to_blender(
         )
 
         # Assign material with texture
-        _assign_material(obj, group_name, texture_dir)
+        _assign_material(obj, group_name, texture_dirs=search_dirs, texture_map=texture_map)
 
         objects.append(obj)
 

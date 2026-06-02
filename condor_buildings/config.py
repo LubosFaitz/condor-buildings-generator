@@ -275,8 +275,44 @@ TEXTURE_MAP = {
     'flat_roof_4': 'Roof4.dds',
     'flat_roof_5': 'Roof5.dds',
     'flat_roof_6': 'Roof6.dds',
-    'flat_roof': 'Roof1.dds',  # merged mode, placeholder
+    'flat_roof': 'Roof1.dds',  # merged mode, placeholder (overridden by orthophoto)
 }
+
+# =============================================================================
+# TERRAIN ORTHOPHOTO ON MERGED FLAT ROOFS (Michel/Andy request, v0.8.6)
+# =============================================================================
+# Condor stores one orthophoto per heightmap patch as "t<patch>.dds" in the
+# landscape Textures folder. It covers the full 5760 m patch with the same
+# orientation as the heightmap (confirmed by Andy1248, patch 004001).
+# When "Merge Flat Roofs" is on, the single 'flat_roof' object is textured with
+# this orthophoto using patch-normalized UVs, so each flat roof samples the same
+# aerial-photo pixel it sits on (the trick that makes roofs blend from the air).
+
+def terrain_texture_filename(patch_id: str) -> str:
+    """Return the Condor terrain orthophoto filename for a patch (t<patch>.dds)."""
+    return f"t{patch_id}.dds"
+
+
+def build_texture_map(patch_id: str = "", flat_roof_merge: bool = False) -> dict:
+    """
+    Build a per-run texture map.
+
+    Returns a copy of TEXTURE_MAP with the merged 'flat_roof' group pointed at the
+    patch orthophoto (t<patch>.dds) when flat_roof_merge is enabled. Used for both
+    Blender material assignment and the Condor MTL export so the merged flat roof
+    references the aerial photo instead of the Roof1.dds placeholder.
+    """
+    tex = dict(TEXTURE_MAP)
+    if flat_roof_merge and patch_id:
+        tex['flat_roof'] = terrain_texture_filename(patch_id)
+    return tex
+
+
+# UV V-axis flip for the orthophoto on flat roofs. Validated as False in Blender
+# (north up, matches the aerial image). The wall atlases already render correctly
+# in Condor with standard OBJ UVs, so flat-roof UVs in the same convention should
+# match too. If Condor ever shows the photo N-S mirrored on roofs, set True.
+FLAT_ROOF_ORTHOPHOTO_V_FLIP = False
 
 # =============================================================================
 # EXPORT SETTINGS
@@ -288,6 +324,33 @@ OBJ_UV_PRECISION = 6
 
 # Export with per-building groups (for potential collision use)
 OBJ_EXPORT_GROUPS = True
+
+# -----------------------------------------------------------------------------
+# CONDOR-READY EXPORT (OBJ + MTL)
+# -----------------------------------------------------------------------------
+# Axis transform baked into the direct OBJ export so the file matches what
+# Blender produces with "Forward: X, Up: Z" (the settings Andy/Condor beta team
+# use and the Landscape Editor accepts). Measured empirically:
+#   (x, y, z)_pipeline  ->  (y, -x, z)_file   (a -90 deg rotation about Z)
+# Set CONDOR_AXIS_SWAP = False to write raw pipeline coordinates instead.
+CONDOR_AXIS_SWAP = True
+
+# Material values required by Condor's c3d (per Condor beta team feedback):
+# Spec 0, Shiny 0, diffuse RGB + alpha all 1. Texture referenced by bare
+# filename so it resolves from the landscape Textures folder.
+CONDOR_MTL_KA = (1.0, 1.0, 1.0)   # ambient
+CONDOR_MTL_KD = (1.0, 1.0, 1.0)   # diffuse (RGB all 1)
+CONDOR_MTL_KS = (0.0, 0.0, 0.0)   # specular (Spec 0)
+CONDOR_MTL_NS = 0.0               # specular exponent (Shiny 0)
+CONDOR_MTL_D = 1.0                # dissolve / alpha 1
+CONDOR_MTL_ILLUM = 1             # illumination model
+CONDOR_EXPORT_NORMALS = True     # write vn and f v/vt/vn (matches Blender export)
+CONDOR_EXPORT_TRIANGULATE = True # triangulate n-gons (Condor needs triangle mesh)
+
+# Texture path prefix in map_Kd. Condor stores .dds in a "Textures" subfolder of
+# both the scenery and the Working/Autogen folder, so the object references them as
+# "Textures/<file>.dds" (confirmed by Andy/Condor beta team, v0.8.5).
+CONDOR_TEXTURE_PREFIX = "Textures/"
 
 # =============================================================================
 # REPORT SETTINGS

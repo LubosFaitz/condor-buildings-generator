@@ -180,8 +180,12 @@ class CondorBuildingsProperties(PropertyGroup):
     )
 
     flat_roof_merge: BoolProperty(
-        name="Merge Flat Roofs",
-        description="Merge all flat roofs into a single object with global UV projection (for terrain texture mapping)",
+        name="Merge Flat Roofs (terrain photo)",
+        description=(
+            "Merge all flat roofs into a single object and texture it with the patch "
+            "orthophoto t<patch>.dds (from the landscape Textures folder), using "
+            "patch-normalized UVs so roofs blend with the aerial photo from the air"
+        ),
         default=False,
     )
 
