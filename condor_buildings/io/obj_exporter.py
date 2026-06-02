@@ -696,6 +696,9 @@ def export_condor_obj_mtl(
         triangulate: Fan-triangulate n-gons (default True)
         include_normals: Write vn and f v/vt/vn (default True)
         material_prefix: Prefix for material names (default "")
+        texture_prefix: Prefix prepended to texture filenames in map_Kd
+            (default config.CONDOR_TEXTURE_PREFIX, empty — the Condor Landscape
+            Editor adds the "Texture/" folder itself during c3d conversion)
 
     Returns:
         ExportStats with export statistics

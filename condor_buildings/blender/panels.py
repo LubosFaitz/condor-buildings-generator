@@ -158,7 +158,10 @@ class CONDOR_PT_roof_options_panel(Panel):
         layout.prop(props, "random_hipped")
         layout.prop(props, "flat_roof_merge")
         if props.flat_roof_merge:
-            layout.label(text="Flat roofs use patch orthophoto t<patch>.dds", icon='IMAGE_DATA')
+            sub = layout.box()
+            sub.prop(props, "flat_roof_terrain_photo")
+            if props.flat_roof_terrain_photo:
+                sub.label(text="Flat roofs use patch orthophoto t<patch>.dds", icon='IMAGE_DATA')
 
         # Help text
         if props.roof_selection_mode == 'GEOMETRY':

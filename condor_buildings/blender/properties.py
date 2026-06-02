@@ -180,11 +180,21 @@ class CondorBuildingsProperties(PropertyGroup):
     )
 
     flat_roof_merge: BoolProperty(
-        name="Merge Flat Roofs (terrain photo)",
+        name="Merge Flat Roofs",
         description=(
-            "Merge all flat roofs into a single object and texture it with the patch "
-            "orthophoto t<patch>.dds (from the landscape Textures folder), using "
-            "patch-normalized UVs so roofs blend with the aerial photo from the air"
+            "Merge all flat roofs into a single object (instead of 6 atlas groups). "
+            "Reduces object count; required for the terrain photo option below"
+        ),
+        default=False,
+    )
+
+    flat_roof_terrain_photo: BoolProperty(
+        name="Terrain photo on flat roofs",
+        description=(
+            "Texture the merged flat roofs with the patch orthophoto t<patch>.dds "
+            "(from the landscape Textures folder), using patch-normalized UVs so roofs "
+            "blend with the aerial photo from the air. Optional (off by default); "
+            "enabling it also merges flat roofs"
         ),
         default=False,
     )

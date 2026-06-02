@@ -1,6 +1,6 @@
 # Condor Buildings Generator
 
-[![Version](https://img.shields.io/badge/version-0.8.6-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
+[![Version](https://img.shields.io/badge/version-0.8.7-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org/)
 [![Blender](https://img.shields.io/badge/blender-4.0+-orange.svg)](https://www.blender.org/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
@@ -30,7 +30,7 @@ python -m condor_buildings.main \
 
 ### Option 2: Blender Addon (v0.5.0+)
 
-1. Download `condor_buildings_v0.8.6.zip` from releases
+1. Download `condor_buildings_v0.8.7.zip` from releases
 2. In Blender: Edit > Preferences > Add-ons > Install
 3. Select the ZIP file
 4. Enable "Condor Buildings Generator" addon
@@ -40,6 +40,10 @@ python -m condor_buildings.main \
 8. Select a landscape from the dropdown
 9. Set patch range (X/Y min/max) or enable single patch mode
 10. Click "Generate Buildings"
+
+**New in v0.8.7:**
+- **Terrain photo on flat roofs is now optional (Wiek/Chris/Uros feedback)**: the aerial-photo texture on flat roofs is decoupled from merging. "Merge Flat Roofs" now only merges the flat-roof geometry into a single object; a separate **"Terrain photo on flat roofs"** checkbox (off by default) applies the patch orthophoto. With the photo off, merged flat roofs use the roof atlas (`Roof1.dds`) with building-aligned UVs. Enabling the photo implies merging.
+- **Condor MTL texture paths reverted to bare filenames (Andy feedback)**: the Condor Landscape Editor adds a `Texture/` folder itself when converting the object to a c3d, so a `Textures/` prefix in our output produced a doubled `Texture/Textures/<file>.dds` that wouldn't load in the Condor sim. The MTL now references every texture by **bare filename** (`map_Kd t<patch>.dds`, `map_Kd <Atlas>.dds`) — `CONDOR_TEXTURE_PREFIX = ""`, matching the pre-v0.8.5 output. Uniform across the orthophoto and the wall atlases.
 
 **New in v0.8.6:**
 - **Terrain photo on flat roofs (Michel's trick, requested via Andy)**: when "Merge Flat Roofs" is on, all flat roofs merge into one `flat_roof` object textured with the **patch orthophoto** `t<patch>.dds` (the same aerial image Condor uses for the terrain, from the landscape `Textures` folder). The roof UVs are normalized to the patch (`u=(X+2880)/5760`, `v=(Y+2880)/5760`), so each roof samples the exact pixel of the photo it sits on and **blends with the terrain from the air**. The Condor MTL references it as `map_Kd Textures/t<patch>.dds`; the Blender preview also loads it (searches the landscape `Textures` folder). Validated end-to-end against Andy's real patch 004001: UVs land 1:1 on the orthophoto and roofs are seamless from above. A V-flip toggle (`FLAT_ROOF_ORTHOPHOTO_V_FLIP`, default off) is provided in case Condor samples V the other way.
@@ -1395,6 +1399,7 @@ Condor 3D (x, y, z)
 | 0.8.4 | May 29, 2026 | Condor-ready OBJ+MTL export: new "Export Condor OBJ+MTL" button writes triangulated, axis-corrected (Forward X / Up Z) OBJ + matching .mtl (Spec 0, Shiny 0, RGB+alpha 1, map_Kd) to Working/Autogen — no manual Blender tweaking needed |
 | 0.8.5 | May 30, 2026 | Condor beta feedback: object named `o<patch>.obj` (no LOD0 suffix), `map_Kd Textures/<file>.dds` path prefix, and Export also imports to Blender viewport for single-patch preview |
 | 0.8.6 | Jun 1, 2026 | Terrain orthophoto on merged flat roofs (Michel's trick): `flat_roof` textured with patch `t<patch>.dds`, patch-normalized UVs so roofs blend with the aerial photo from the air; validated against Andy's real patch 004001 |
+| 0.8.7 | Jun 2, 2026 | Terrain photo on flat roofs made optional (separate checkbox, off by default — Wiek/Chris/Uros); decoupled from geometry merge. Condor MTL texture paths reverted to bare filenames (`CONDOR_TEXTURE_PREFIX=""`) — the Landscape Editor adds the `Texture/` folder, so a prefix doubled it and broke sim loading (Andy) |
 
 ### Changelog Files
 
@@ -1429,6 +1434,10 @@ This project was developed by:
 
 - **Juan Luis Gabriel** - Project Manager & Orchestrator. Coordinated requirements gathering, communication between team members, and project direction.
 
+- **Andy Souter** - Condor Scenery Designer & Beta Tester. Validated the export pipeline in real Condor sceneries and the Landscape Editor, and provided detailed feedback on c3d texture paths, empty-patch handling, vertex-count limits, and OSM building fidelity.
+
 - **Anthropic Claude Opus 4.5** (via Claude Code) - Software Development. Designed the solution architecture and implemented the foundational codebase for this project.
 
 - **Anthropic Claude Opus 4.6** (via Claude Code) - Software Development. Continued development from v0.6.3 onwards, including texture grouping, polyskel UV mapping, and ongoing improvements.
+
+- **Anthropic Claude Opus 4.8** (via Claude Code) - Software Development. Continued development from v0.8.7 onwards, including the optional flat-roof terrain photo and Condor c3d texture-path handling.

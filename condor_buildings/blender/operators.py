@@ -207,6 +207,7 @@ class CONDOR_OT_import_buildings(Operator):
             house_min_side=props.house_min_side,
             house_max_aspect=props.house_max_aspect,
             flat_roof_merge=props.flat_roof_merge,
+            flat_roof_terrain_photo=props.flat_roof_terrain_photo,
         )
 
         # Process patches
@@ -300,8 +301,9 @@ class CONDOR_OT_import_buildings(Operator):
                     # Advanced geometry constraints
                     gabled_min_rectangularity=props.gabled_min_rectangularity,
                     polyskel_max_vertices=props.polyskel_max_vertices,
-                    # Flat roof merge
+                    # Flat roof merge + optional terrain photo
                     flat_roof_merge=props.flat_roof_merge,
+                    flat_roof_terrain_photo=props.flat_roof_terrain_photo,
                 )
 
                 # Override OSM path in config
@@ -337,7 +339,7 @@ class CONDOR_OT_import_buildings(Operator):
                     print(f"[Condor] Texture dir exists: {os.path.isdir(texture_dir)}")
 
                     # Per-patch texture map (points merged flat_roof at t<patch>.dds)
-                    tex_map = build_texture_map(patch_id, props.flat_roof_merge)
+                    tex_map = build_texture_map(patch_id, props.flat_roof_terrain_photo)
                     extra_dirs = [landscape_texture_dir]
 
                     # Use new grouped meshes (v0.6.3+)
@@ -535,6 +537,7 @@ class CONDOR_OT_export_condor(Operator):
             house_min_side=props.house_min_side,
             house_max_aspect=props.house_max_aspect,
             flat_roof_merge=props.flat_roof_merge,
+            flat_roof_terrain_photo=props.flat_roof_terrain_photo,
         )
 
         start_time = time.time()
@@ -607,6 +610,7 @@ class CONDOR_OT_export_condor(Operator):
                     gabled_min_rectangularity=props.gabled_min_rectangularity,
                     polyskel_max_vertices=props.polyskel_max_vertices,
                     flat_roof_merge=props.flat_roof_merge,
+                    flat_roof_terrain_photo=props.flat_roof_terrain_photo,
                 )
                 config.osm_path = osm_path
 
@@ -622,8 +626,11 @@ class CONDOR_OT_export_condor(Operator):
                     continue
 
                 # Per-patch texture map: points the merged flat_roof object at the
-                # patch orthophoto t<patch>.dds (instead of the Roof1.dds placeholder).
-                tex_map = build_texture_map(patch_id, props.flat_roof_merge)
+                # patch orthophoto t<patch>.dds (instead of the Roof1.dds placeholder)
+                # only when the terrain photo is enabled. Textures are referenced by
+                # bare filename; the Landscape Editor adds the Texture/ folder on c3d
+                # conversion (Andy, v0.8.7).
+                tex_map = build_texture_map(patch_id, props.flat_roof_terrain_photo)
 
                 # Select which LOD groups to export
                 lods = []

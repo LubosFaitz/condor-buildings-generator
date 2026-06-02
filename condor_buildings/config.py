@@ -293,17 +293,21 @@ def terrain_texture_filename(patch_id: str) -> str:
     return f"t{patch_id}.dds"
 
 
-def build_texture_map(patch_id: str = "", flat_roof_merge: bool = False) -> dict:
+def build_texture_map(patch_id: str = "", terrain_photo: bool = False) -> dict:
     """
     Build a per-run texture map.
 
     Returns a copy of TEXTURE_MAP with the merged 'flat_roof' group pointed at the
-    patch orthophoto (t<patch>.dds) when flat_roof_merge is enabled. Used for both
-    Blender material assignment and the Condor MTL export so the merged flat roof
-    references the aerial photo instead of the Roof1.dds placeholder.
+    patch orthophoto (t<patch>.dds) only when the terrain photo is enabled. When the
+    photo is off the merged 'flat_roof' keeps the Roof1.dds placeholder. Used for both
+    Blender material assignment and the Condor MTL export.
+
+    Note: the terrain photo is opt-in (Wiek/Chris/Uros feedback, v0.8.7) and is
+    independent from merging the flat-roof geometry. Merging without the photo simply
+    uses the roof atlas.
     """
     tex = dict(TEXTURE_MAP)
-    if flat_roof_merge and patch_id:
+    if terrain_photo and patch_id:
         tex['flat_roof'] = terrain_texture_filename(patch_id)
     return tex
 
@@ -347,10 +351,12 @@ CONDOR_MTL_ILLUM = 1             # illumination model
 CONDOR_EXPORT_NORMALS = True     # write vn and f v/vt/vn (matches Blender export)
 CONDOR_EXPORT_TRIANGULATE = True # triangulate n-gons (Condor needs triangle mesh)
 
-# Texture path prefix in map_Kd. Condor stores .dds in a "Textures" subfolder of
-# both the scenery and the Working/Autogen folder, so the object references them as
-# "Textures/<file>.dds" (confirmed by Andy/Condor beta team, v0.8.5).
-CONDOR_TEXTURE_PREFIX = "Textures/"
+# Texture path prefix in map_Kd. Empty: textures are referenced by bare filename
+# (e.g. "t<patch>.dds", "<Atlas>.dds"). The Condor Landscape Editor adds the
+# "Texture/" folder itself when converting the object to a c3d, so adding a prefix
+# here produces a doubled "Texture/Textures/<file>.dds" that fails to load in the
+# Condor sim (Andy, v0.8.7). Bare filename matches the pre-v0.8.5 output.
+CONDOR_TEXTURE_PREFIX = ""
 
 # =============================================================================
 # REPORT SETTINGS
@@ -431,13 +437,25 @@ class PipelineConfig:
     # Used by Blender addon for downloaded OSM files
     osm_path: Optional[str] = None
 
-    # Flat roof merge: merge all flat roofs into single object with global UV projection
-    # When True: single 'flat_roof' object, UVs use world coordinates (for terrain texture)
+    # Flat roof merge: merge all flat roofs into single object
+    # When True: single 'flat_roof' object
     # When False: 6 separate flat_roof_1..6 objects, UVs aligned to building orientation
     flat_roof_merge: bool = False
 
+    # Terrain orthophoto on flat roofs (opt-in; Wiek/Chris/Uros feedback, v0.8.7).
+    # When True: the merged flat_roof uses world-coordinate (global) UVs and is textured
+    # with the patch orthophoto t<patch>.dds so roofs blend with the aerial photo.
+    # When False: flat roofs use the roof atlas (Roof1..6.dds) with building-aligned UVs.
+    # The photo requires the merged single object, so it implies flat_roof_merge.
+    flat_roof_terrain_photo: bool = False
+
     def __post_init__(self):
         """Validate configuration values."""
+        # The terrain orthophoto needs the single merged flat_roof object with global
+        # UVs, so enabling the photo implies merging.
+        if self.flat_roof_terrain_photo:
+            self.flat_roof_merge = True
+
         if self.floor_z_epsilon < 0:
             raise ValueError("floor_z_epsilon must be non-negative")
 

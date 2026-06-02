@@ -414,6 +414,7 @@ def run_pipeline(
         house_min_side=config.house_min_side_length,
         house_max_aspect=config.house_max_aspect_ratio,
         flat_roof_merge=config.flat_roof_merge,
+        flat_roof_terrain_photo=config.flat_roof_terrain_photo,
     )
 
     # Create mesh groupers for LOD0 and LOD1
@@ -584,8 +585,9 @@ def run_pipeline(
 
     # Step 6c: Terrain orthophoto UVs for the merged flat_roof group
     # (Michel/Andy request). Maps the patch aerial photo t<patch>.dds onto flat
-    # roofs so they blend with the terrain when viewed from the air.
-    if config.flat_roof_merge:
+    # roofs so they blend with the terrain when viewed from the air. Opt-in
+    # (Wiek/Chris/Uros, v0.8.7): only applied when the terrain photo is enabled.
+    if config.flat_roof_terrain_photo:
         n0 = _apply_terrain_orthophoto_uvs(lod0_groups)
         n1 = _apply_terrain_orthophoto_uvs(lod1_groups)
         logger.info(
@@ -872,11 +874,19 @@ def main():
         help='Randomly assign hipped roof to 50%% of eligible buildings (for testing)'
     )
 
-    # Flat roof merge: single object with global UV projection
+    # Flat roof merge: single object
     parser.add_argument(
         '--flat-roof-merge',
         action='store_true',
-        help='Merge all flat roofs into single object with global UV projection (for terrain texture)'
+        help='Merge all flat roofs into a single object'
+    )
+
+    # Terrain orthophoto on flat roofs (opt-in; implies --flat-roof-merge)
+    parser.add_argument(
+        '--flat-roof-terrain-photo',
+        action='store_true',
+        help='Texture merged flat roofs with the patch orthophoto t<patch>.dds '
+             '(global UV; implies --flat-roof-merge)'
     )
 
     parser.add_argument(
@@ -923,6 +933,7 @@ def main():
         random_hipped=args.random_hipped,
         roof_selection_mode=roof_mode,
         flat_roof_merge=args.flat_roof_merge,
+        flat_roof_terrain_photo=args.flat_roof_terrain_photo,
     )
 
     try:
