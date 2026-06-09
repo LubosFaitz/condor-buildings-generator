@@ -309,19 +309,20 @@ def _generate_pentagonal_gable_wall(
     uv3 = mesh.add_uv(uvs[3][0], uvs[3][1])  # apex
     uv4 = mesh.add_uv(uvs[4][0], uvs[4][1])  # top left (eave)
 
-    # Determine winding direction for outward-facing normal
-    perp_x = -ridge_dy  # perpendicular to ridge
-    perp_y = ridge_dx
-    to_mid_perp = (mid_x - obb_center[0]) * perp_x + (mid_y - obb_center[1]) * perp_y
-
-    if to_mid_perp > 0:
-        # Normal should point in +perp direction (CCW winding)
-        # Pentagon: bottom-left → bottom-right → top-right → apex → top-left
-        mesh.add_polygon_with_uvs([v0, v1, v2, v3, v4], [uv0, uv1, uv2, uv3, uv4])
-    else:
-        # Normal should point in -perp direction (reverse winding)
-        # Pentagon: bottom-right → bottom-left → top-left → apex → top-right
-        mesh.add_polygon_with_uvs([v1, v0, v4, v3, v2], [uv1, uv0, uv4, uv3, uv2])
+    # Outward-facing winding for a CCW-normalized footprint.
+    #
+    # The vertex order [v0,v1,v2,v3,v4] follows the outer ring's p0→p1 direction,
+    # which yields a horizontal normal of (edge_dy, -edge_dx) — i.e. the outward
+    # side of a CCW ring (the very same convention the side walls use). The OSM
+    # parser guarantees CCW outer rings (normalize_ring_orientation,
+    # should_be_ccw=True), so this winding is always outward.
+    #
+    # BUGFIX: the previous OBB-based test projected (mid - obb_center) onto
+    # perp=(-ridge_dy, ridge_dx) — the gable EDGE axis — but a gable wall's normal
+    # runs along the RIDGE axis, not the edge axis. For centred/symmetric buildings
+    # both gable ends projected to ~0 and were wound INWARD, so Condor back-face
+    # culled them and they looked like missing walls (Andy's UK3 report).
+    mesh.add_polygon_with_uvs([v0, v1, v2, v3, v4], [uv0, uv1, uv2, uv3, uv4])
 
 
 def _generate_separated_gable_wall(
@@ -398,23 +399,16 @@ def _generate_separated_gable_wall(
     uv_tri_right = mesh.add_uv(tri_uvs[1][0], tri_uvs[1][1])
     uv_tri_apex = mesh.add_uv(tri_uvs[2][0], tri_uvs[2][1])
 
-    # Determine winding direction for outward-facing normal
-    perp_x = -ridge_dy  # perpendicular to ridge
-    perp_y = ridge_dx
-    to_mid_perp = (mid_x - obb_center[0]) * perp_x + (mid_y - obb_center[1]) * perp_y
-
-    if to_mid_perp > 0:
-        # Normal should point in +perp direction (CCW winding)
-        # Rectangle: bottom-left → bottom-right → top-right → top-left
-        mesh.add_quad_with_uvs(v0, v1, v2, v3, uv_rect_bl, uv_rect_br, uv_rect_tr, uv_rect_tl)
-        # Triangle (gable): top-left → top-right → apex
-        mesh.add_triangle_with_uvs(v3, v2, v4, uv_tri_left, uv_tri_right, uv_tri_apex)
-    else:
-        # Normal should point in -perp direction (reverse winding)
-        # Rectangle: bottom-right → bottom-left → top-left → top-right
-        mesh.add_quad_with_uvs(v1, v0, v3, v2, uv_rect_br, uv_rect_bl, uv_rect_tl, uv_rect_tr)
-        # Triangle (gable): top-right → top-left → apex
-        mesh.add_triangle_with_uvs(v2, v3, v4, uv_tri_right, uv_tri_left, uv_tri_apex)
+    # Outward-facing winding for a CCW-normalized footprint (see the detailed note
+    # in _generate_pentagonal_gable_wall). The p0→p1 vertex order gives an outward
+    # normal of (edge_dy, -edge_dx), matching the side walls; the footprint is
+    # guaranteed CCW by the OSM parser. The old OBB/perp test used the gable EDGE
+    # axis instead of the ridge-aligned NORMAL axis and flipped gable ends inward on
+    # centred buildings (back-face culled → "missing walls", Andy's UK3 report).
+    # Rectangle: bottom-left → bottom-right → top-right → top-left
+    mesh.add_quad_with_uvs(v0, v1, v2, v3, uv_rect_bl, uv_rect_br, uv_rect_tr, uv_rect_tl)
+    # Triangle (gable): top-left → top-right → apex
+    mesh.add_triangle_with_uvs(v3, v2, v4, uv_tri_left, uv_tri_right, uv_tri_apex)
 
 
 def _generate_ring_walls(

@@ -1,6 +1,6 @@
 # Condor Buildings Generator
 
-[![Version](https://img.shields.io/badge/version-0.8.7-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
+[![Version](https://img.shields.io/badge/version-0.8.10-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org/)
 [![Blender](https://img.shields.io/badge/blender-4.0+-orange.svg)](https://www.blender.org/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
@@ -30,7 +30,7 @@ python -m condor_buildings.main \
 
 ### Option 2: Blender Addon (v0.5.0+)
 
-1. Download `condor_buildings_v0.8.7.zip` from releases
+1. Download `condor_buildings_v0.8.10.zip` from releases
 2. In Blender: Edit > Preferences > Add-ons > Install
 3. Select the ZIP file
 4. Enable "Condor Buildings Generator" addon
@@ -40,6 +40,18 @@ python -m condor_buildings.main \
 8. Select a landscape from the dropdown
 9. Set patch range (X/Y min/max) or enable single patch mode
 10. Click "Generate Buildings"
+
+**New in v0.8.10:**
+- **Fixed gable-end walls rendering inward (back-face culled) — Andy's "missing walls" report**: the triangular gable-end walls of pitched houses were wound with their normal pointing **inward** on a large fraction of buildings, so Condor back-face-culled them and the house looked like it was missing a wall — only obvious up close, viewed end-on. Root cause in `generators/walls.py`: the outward-normal test projected `(gable midpoint − OBB center)` onto `perp = (-ridge_dy, ridge_dx)` (the gable **edge** axis) instead of the ridge-aligned **normal** axis, so for centred/symmetric buildings both gable ends collapsed to ~0 and flipped inward. Fix: gable walls now use the CCW outer-ring winding `[v0,v1,v2,v3,v4]` (normal `(edge_dy, -edge_dx)`) — the same convention the side walls use; the OSM parser already guarantees CCW outer rings. Validated on Andy's patch 004001 (16,231 buildings): inward-facing gable wall faces went from **11,602 → 0** across 8,373 gabled houses; side/flat/hipped/highrise walls were already correct and are unchanged. Confirmed visually in Blender (back-face culling): the buggy gable is a see-through hole, the fixed one is solid.
+
+**New in v0.8.9:**
+- **LOD filename convention reverted (Wiek, after talking to Uros)**: the current Landscape Editor expects `o<patch>.obj` for LOD0 (no suffix) and `o<patch>_LOD1.obj` for LOD1, each with its matching `.mtl`. The Condor export *and* the CLI now write that naming again, reverting the explicit `_LOD0` suffix introduced in v0.8.8 (re-aligns with the v0.8.5 scheme). The bare LOD0 name keeps backwards compatibility with the LE in use today.
+- **Materials self-heal when their texture appears later (Luboš Faitz)**: the addon reuses each `condor_<group>` material by name across runs. Before, if a material was first created while its `.dds` was missing from `Working\Autogen\Textures\`, it stayed "white" (no Image Texture node) and every later regeneration reused it untextured — the only fix was to delete the material by hand. Now, when reusing a material that has no image, the addon re-checks the Textures folder and attaches the Image Texture node automatically if the `.dds` is present. No manual deleting, no manual node wiring. (A plain "Clear Buildings" never fixed this on its own — the material survives as orphan data and is reused.)
+
+**New in v0.8.8:**
+- **New Landscape Editor LOD naming (Wiek/Uros)**: Uros's new LE merges `o######_LOD0.obj` + `o######_LOD1.obj` (each with its matching `.mtl`) into a single `o######.c3d` with the LOD fields filled in. The Condor export now writes **both** LODs with an explicit suffix (`o<patch>_LOD0.{obj,mtl}` and `o<patch>_LOD1.{obj,mtl}`) so the LE can pair them — no more manual renaming. Reverts the v0.8.5 no-suffix LOD0 name that the old LE required.
+- **`T_` prefix for the flat-roof orthophoto (Wiek)**: the new LE rewrites a `T_` texture prefix to the landscape ground-texture path (`Landscapes\<name>\Textures\`) on c3d conversion. When "Terrain photo on flat roofs" is on, the merged `flat_roof` texture is emitted as `T_t<patch>.dds` in the Condor MTL only (the Blender preview keeps `t<patch>.dds`). All tiled atlases and `Pylons.dds` stay bare — the LE resolves them from `Autogen\Textures` automatically.
+- **OSM height clamp documented (Andy's "giant building")**: a single OSM typo (e.g. `building:levels="233"` on a house) otherwise produces an absurd ~700 m skyscraper. `MAX_BUILDING_LEVELS = 60` / `MAX_BUILDING_HEIGHT_M = 200` clamp clearly-bad values and emit a WARNING with the OSM id/address (caps are generous — The Shard is 72 floors / 310 m — so real buildings are never clipped). Built/validated previously, released here.
 
 **New in v0.8.7:**
 - **Terrain photo on flat roofs is now optional (Wiek/Chris/Uros feedback)**: the aerial-photo texture on flat roofs is decoupled from merging. "Merge Flat Roofs" now only merges the flat-roof geometry into a single object; a separate **"Terrain photo on flat roofs"** checkbox (off by default) applies the patch orthophoto. With the photo off, merged flat roofs use the roof atlas (`Roof1.dds`) with building-aligned UVs. Enabling the photo implies merging.
@@ -121,7 +133,7 @@ Place these files in your `--patch-dir`:
 
 | File | Description |
 |------|-------------|
-| `o{patch_id}_LOD0.obj` | Detailed mesh with 0.5m roof overhang |
+| `o{patch_id}.obj` | Detailed mesh, LOD0 (0.5m roof overhang) |
 | `o{patch_id}_LOD1.obj` | Simplified mesh without overhang |
 | `o{patch_id}_report.json` | Processing statistics |
 | `o{patch_id}.log` | Detailed processing log |
@@ -327,7 +339,7 @@ For each building:
 ### Stage 7: Export OBJ Files
 
 Exports combined meshes to:
-- `o{patch_id}_LOD0.obj` - Detailed mesh
+- `o{patch_id}.obj` - Detailed mesh (LOD0)
 - `o{patch_id}_LOD1.obj` - Simplified mesh
 
 ### Stage 8: Generate Report
@@ -967,7 +979,7 @@ g building_way_987654321
 
 | File | Description |
 |------|-------------|
-| `o{patch_id}_LOD0.obj` | Detailed mesh with 0.5m roof overhang and UV coordinates |
+| `o{patch_id}.obj` | Detailed mesh, LOD0 (0.5m roof overhang and UV coordinates) |
 | `o{patch_id}_LOD1.obj` | Simplified mesh without overhang, with UV coordinates |
 | `o{patch_id}_report.json` | Processing statistics including roof type distribution |
 | `o{patch_id}.log` | Detailed processing log |
@@ -1400,6 +1412,9 @@ Condor 3D (x, y, z)
 | 0.8.5 | May 30, 2026 | Condor beta feedback: object named `o<patch>.obj` (no LOD0 suffix), `map_Kd Textures/<file>.dds` path prefix, and Export also imports to Blender viewport for single-patch preview |
 | 0.8.6 | Jun 1, 2026 | Terrain orthophoto on merged flat roofs (Michel's trick): `flat_roof` textured with patch `t<patch>.dds`, patch-normalized UVs so roofs blend with the aerial photo from the air; validated against Andy's real patch 004001 |
 | 0.8.7 | Jun 2, 2026 | Terrain photo on flat roofs made optional (separate checkbox, off by default — Wiek/Chris/Uros); decoupled from geometry merge. Condor MTL texture paths reverted to bare filenames (`CONDOR_TEXTURE_PREFIX=""`) — the Landscape Editor adds the `Texture/` folder, so a prefix doubled it and broke sim loading (Andy) |
+| 0.8.8 | Jun 8, 2026 | New LE (Uros) conventions: Condor export writes both LODs with explicit suffix (`o<patch>_LOD0`/`_LOD1` obj+mtl) so the LE pairs them into one c3d (reverts v0.8.5 no-suffix LOD0); `T_` prefix on the flat-roof orthophoto in the Condor MTL so the LE routes it to the landscape Textures folder. OSM height clamp documented (`MAX_BUILDING_LEVELS=60`/`MAX_BUILDING_HEIGHT_M=200`). Powerlines bundled but opt-in/beta, awaiting Wiek's sim sign-off |
+| 0.8.9 | Jun 9, 2026 | LOD filename convention reverted (Wiek/Uros): LOD0 is `o<patch>.obj` (no suffix), LOD1 is `o<patch>_LOD1.obj` for current-LE backwards compatibility (re-reverts the v0.8.8 `_LOD0` suffix; applies to both the Condor export and the CLI). Materials self-heal: reusing a textureless `condor_*` material now attaches the Image Texture node when the `.dds` is present in the Textures folder, so adding a texture after a first generation no longer needs a manual material delete (Luboš Faitz) |
+| 0.8.10 | Jun 9, 2026 | Fixed gable-end walls facing inward (back-face culled → "missing walls" up close; Andy's UK3 report). The gable winding in `generators/walls.py` projected onto the gable edge axis instead of the ridge-aligned normal axis, flipping ~half of gable ends inward; now uses the CCW side-wall winding convention. Validated on patch 004001: inward gable wall faces 11,602 → 0 across 8,373 gabled houses; side/flat/hipped/highrise walls unchanged. Confirmed in Blender via back-face culling |
 
 ### Changelog Files
 

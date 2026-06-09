@@ -378,7 +378,10 @@ def export_obj_lod0(
     Returns:
         Path to exported file
     """
-    filename = f"o{patch_id}_LOD0.obj"
+    # LOD0 keeps the bare o<patch>.obj name (no suffix); LOD1 gets _LOD1. Matches
+    # the Condor export operator and the convention the current Landscape Editor
+    # expects (Wiek/Uros, 2026-06-09).
+    filename = f"o{patch_id}.obj"
     filepath = os.path.join(output_dir, filename)
 
     if pitched_meshes is not None and flat_meshes is not None:

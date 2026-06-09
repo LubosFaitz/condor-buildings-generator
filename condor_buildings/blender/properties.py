@@ -199,6 +199,18 @@ class CondorBuildingsProperties(PropertyGroup):
         default=False,
     )
 
+    # --- Powerlines ---
+
+    generate_powerlines: BoolProperty(
+        name="Generate Powerlines",
+        description=(
+            "Also generate powerlines from OSM power=line / minor_line ways: a pylon "
+            "at every node + catenary cables, as a single 'pylones' object sharing the "
+            "buildings' OBJ/MTL/C3D (texture Pylons.dds). Off by default"
+        ),
+        default=False,
+    )
+
     # --- House-Scale Constraints (Advanced) ---
 
     house_max_area: FloatProperty(

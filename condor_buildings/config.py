@@ -146,6 +146,22 @@ GABLED_MAX_FLOORS = 2
 HIPPED_MAX_FLOORS = 2
 
 # =============================================================================
+# OSM DATA SANITY LIMITS
+# =============================================================================
+# OSM is community-edited, so a single typo (e.g. building:levels="233" on a
+# house, observed in Dover patch 003023, way 1479380721) produces an absurd
+# ~700m skyscraper that wrecks the scenery. These caps clamp clearly-bad values
+# and emit a WARNING with the OSM id/address so it can be reported upstream.
+# The Shard (tallest UK building) is 72 floors / 310m, so these generous caps
+# never clip a real building in this kind of low-rise scenery.
+
+# Maximum building:levels accepted from OSM tags before clamping
+MAX_BUILDING_LEVELS = 60
+
+# Maximum wall height (meters) accepted before clamping
+MAX_BUILDING_HEIGHT_M = 200.0
+
+# =============================================================================
 # HOUSE-SCALE SIZE CONSTRAINTS FOR GABLED ROOFS
 # =============================================================================
 # Buildings must be "house-scale" to receive gabled roofs.
@@ -276,6 +292,7 @@ TEXTURE_MAP = {
     'flat_roof_5': 'Roof5.dds',
     'flat_roof_6': 'Roof6.dds',
     'flat_roof': 'Roof1.dds',  # merged mode, placeholder (overridden by orthophoto)
+    'pylones': 'Pylons.dds',   # powerline towers + cables (optional, Wiek's assets)
 }
 
 # =============================================================================
@@ -448,6 +465,13 @@ class PipelineConfig:
     # When False: flat roofs use the roof atlas (Roof1..6.dds) with building-aligned UVs.
     # The photo requires the merged single object, so it implies flat_roof_merge.
     flat_roof_terrain_photo: bool = False
+
+    # Powerlines (optional, off by default). When True the pipeline parses
+    # power=line / minor_line ways from the SAME OSM file, stamps Wiek's pylon
+    # assets at every node and strings catenary cables, and injects the result as
+    # a single 'pylones' object that rides in the same OBJ/MTL/C3D as the buildings
+    # (Wiek Q18). Additive: a powerline failure never blocks the building output.
+    generate_powerlines: bool = False
 
     def __post_init__(self):
         """Validate configuration values."""

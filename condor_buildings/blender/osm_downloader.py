@@ -47,14 +47,21 @@ def build_overpass_query(
     lat_max: float,
     lon_min: float,
     lon_max: float,
-    include_relations: bool = True
+    include_relations: bool = True,
+    include_power: bool = True,
 ) -> str:
     """
-    Build an Overpass QL query for building data.
+    Build an Overpass QL query for building (and optionally powerline) data.
 
     Args:
         lat_min, lat_max, lon_min, lon_max: Bounding box coordinates
         include_relations: Whether to include multipolygon relations
+        include_power: Also fetch power=line / minor_line ways. These are tiny and
+            harmless to the building parser (which ignores them), so they're
+            included by default — that way a single cached map_*.osm serves both
+            the buildings and the optional powerlines feature. The ``>;`` recursion
+            pulls in each line's node coordinates, which is all the powerline
+            generator needs (it stamps a pylon at every node).
 
     Returns:
         Overpass QL query string
@@ -62,23 +69,19 @@ def build_overpass_query(
     # Bounding box format for Overpass: (south,west,north,east)
     bbox = f"{lat_min},{lon_min},{lat_max},{lon_max}"
 
+    parts = [f'  way["building"]({bbox});']
     if include_relations:
-        # Query for ways and relations tagged as buildings
-        query = f"""
+        parts.append(f'  relation["building"]["type"="multipolygon"]({bbox});')
+    if include_power:
+        parts.append(f'  way["power"="line"]({bbox});')
+        parts.append(f'  way["power"="minor_line"]({bbox});')
+
+    body = "\n".join(parts)
+    query = f"""
 [out:xml][timeout:90];
 (
-  way["building"]({bbox});
-  relation["building"]["type"="multipolygon"]({bbox});
+{body}
 );
-out body;
->;
-out skel qt;
-"""
-    else:
-        # Simpler query for just ways
-        query = f"""
-[out:xml][timeout:90];
-way["building"]({bbox});
 out body;
 >;
 out skel qt;

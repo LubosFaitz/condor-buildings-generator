@@ -94,6 +94,13 @@ class CONDOR_PT_main_panel(Panel):
         col.prop(props, "save_to_autogen")
         col.prop(props, "import_to_blender")
 
+        # --- Powerlines (optional extra object) ---
+        box = layout.box()
+        box.label(text="Powerlines", icon='OUTLINER_DATA_GREASEPENCIL')
+        box.prop(props, "generate_powerlines")
+        if props.generate_powerlines:
+            box.label(text="Pylons + cables -> 'pylones' (Pylons.dds)", icon='INFO')
+
         # --- Import Button ---
         layout.separator()
 

@@ -74,6 +74,10 @@ class PipelineStats:
     processing_time_ms: int = 0
     filtered_building_ids: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    # Powerlines (optional 'pylones' object)
+    powerline_towers: int = 0
+    powerline_cables: int = 0
+    powerline_lines: int = 0
 
 
 @dataclass
@@ -205,6 +209,36 @@ def _apply_terrain_orthophoto_uvs(
         new_uvs.append((nu, nv))
     mesh.uvs = new_uvs
     return len(new_uvs)
+
+
+def _generate_powerline_group(osm_path, projector, terrain):
+    """
+    Build the optional 'pylones' mesh (towers + catenary cables) for a patch.
+
+    Powerlines are parsed from the SAME OSM file as the buildings and generated in
+    pipeline coordinates, so they share the patch frame and the Condor axis
+    transform and ride in the same object file (Wiek Q18). The current pylon assets
+    are Wiek's LOD1 towers; until he delivers LOD0 ones the same geometry is used
+    for both LODs, as an independent copy each so any later LOD-specific edit can't
+    cross-contaminate.
+
+    Returns (lod0_mesh, lod1_mesh, PowerlineMeshStats), or (None, None, None) when
+    the patch has no in-range powerlines (so the caller skips the group).
+    """
+    import copy
+    from .io.powerline_parser import parse_powerlines
+    from .generators.powerlines import generate_powerline_meshes
+
+    parse_result = parse_powerlines(osm_path, projector)
+    if not parse_result.lines:
+        return None, None, None
+
+    mesh_lod0, pl_stats = generate_powerline_meshes(parse_result.lines, terrain)
+    if mesh_lod0.is_empty():
+        return None, None, None
+
+    mesh_lod1 = copy.deepcopy(mesh_lod0)
+    return mesh_lod0, mesh_lod1, pl_stats
 
 
 def run_pipeline(
@@ -558,6 +592,29 @@ def run_pipeline(
     lod0_groups = grouper_lod0.get_all_groups()
     lod1_groups = grouper_lod1.get_all_groups()
 
+    # Optional powerlines: parse the same OSM file, stamp Wiek's pylons + string
+    # catenary cables, and inject the result as a single 'pylones' object so it
+    # flows through optimization and export alongside the buildings (Wiek Q18).
+    # Fully guarded — a powerline failure must never break the building output.
+    if config.generate_powerlines:
+        try:
+            pl0, pl1, pl_stats = _generate_powerline_group(osm_path, projector, terrain)
+            if pl0 is not None:
+                lod0_groups['pylones'] = pl0
+                lod1_groups['pylones'] = pl1
+                stats.powerline_towers = pl_stats.towers
+                stats.powerline_cables = pl_stats.cables
+                stats.powerline_lines = pl_stats.lines_with_geometry
+                logger.info(
+                    f"Powerlines: {pl_stats.towers} towers, {pl_stats.cables} "
+                    f"cable spans across {pl_stats.lines_with_geometry} lines"
+                )
+            else:
+                logger.info("Powerlines enabled but no in-range lines in this patch")
+        except Exception as e:
+            stats.warnings.append(f"Powerline generation failed: {e}")
+            logger.warning(f"Powerline generation failed: {e}")
+
     # Count vertices before optimization
     for name, mesh in lod0_groups.items():
         stats.lod0_vertices_before_optimize += len(mesh.vertices)
@@ -621,7 +678,10 @@ def run_pipeline(
 
         # LOD0
         try:
-            result_lod0_path = os.path.join(config.output_dir, f"o{config.patch_id}_LOD0.obj")
+            # LOD0 uses the bare o<patch>.obj name (no suffix); LOD1 keeps _LOD1.
+            # Matches the Condor export operator and the current Landscape Editor
+            # convention (Wiek/Uros, 2026-06-09).
+            result_lod0_path = os.path.join(config.output_dir, f"o{config.patch_id}.obj")
             export_mesh_groups(
                 lod0_groups,
                 result_lod0_path,
@@ -889,6 +949,14 @@ def main():
              '(global UV; implies --flat-roof-merge)'
     )
 
+    # Powerlines (optional): towers + catenary cables as a 'pylones' object
+    parser.add_argument(
+        '--powerlines',
+        action='store_true',
+        help='Also generate powerlines (pylons + cables) from power=line / '
+             'minor_line ways into a single "pylones" object'
+    )
+
     parser.add_argument(
         '--version',
         action='version',
@@ -934,6 +1002,7 @@ def main():
         roof_selection_mode=roof_mode,
         flat_roof_merge=args.flat_roof_merge,
         flat_roof_terrain_photo=args.flat_roof_terrain_photo,
+        generate_powerlines=args.powerlines,
     )
 
     try:
@@ -963,6 +1032,12 @@ def main():
             print(f"  Flat roofs: {report.stats.flat_roofs}")
             print(f"  Gabled->Flat fallbacks: {report.stats.gabled_fallbacks}")
             print(f"  Hipped->Flat fallbacks: {report.stats.hipped_fallbacks}")
+
+            if config.generate_powerlines:
+                print(f"\nPowerlines:")
+                print(f"  Towers: {report.stats.powerline_towers}")
+                print(f"  Cable spans: {report.stats.powerline_cables}")
+                print(f"  Lines with geometry: {report.stats.powerline_lines}")
 
             if report.fallback_reasons:
                 print(f"\nFallback reasons:")

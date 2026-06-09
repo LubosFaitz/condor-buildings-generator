@@ -166,6 +166,7 @@ class CONDOR_OT_import_buildings(Operator):
             from ..config import PipelineConfig, RoofSelectionMode, build_texture_map
             from ..io.patch_metadata import load_patch_metadata
             from ..generators import configure_generator
+            from ..generators.powerlines import pylon_assets_dir
             from .mesh_converter import import_meshes_to_blender, import_grouped_meshes_to_blender, cleanup_buildings_collection
             from .osm_downloader import download_osm_for_patch
         except ImportError as e:
@@ -304,6 +305,8 @@ class CONDOR_OT_import_buildings(Operator):
                     # Flat roof merge + optional terrain photo
                     flat_roof_merge=props.flat_roof_merge,
                     flat_roof_terrain_photo=props.flat_roof_terrain_photo,
+                    # Optional powerlines (pylons + cables -> 'pylones' object)
+                    generate_powerlines=props.generate_powerlines,
                 )
 
                 # Override OSM path in config
@@ -341,6 +344,11 @@ class CONDOR_OT_import_buildings(Operator):
                     # Per-patch texture map (points merged flat_roof at t<patch>.dds)
                     tex_map = build_texture_map(patch_id, props.flat_roof_terrain_photo)
                     extra_dirs = [landscape_texture_dir]
+                    # Pylons.dds ships inside the addon; add its folder so the
+                    # 'pylones' preview is textured even before the user copies it
+                    # into the landscape Textures folder.
+                    if props.generate_powerlines:
+                        extra_dirs.append(pylon_assets_dir())
 
                     # Use new grouped meshes (v0.6.3+)
                     if props.output_lod in ('LOD0', 'BOTH') and result.grouped_lod0:
@@ -501,6 +509,7 @@ class CONDOR_OT_export_condor(Operator):
             from ..io.patch_metadata import load_patch_metadata
             from ..io.obj_exporter import export_condor_obj_mtl
             from ..generators import configure_generator
+            from ..generators.powerlines import pylon_assets_dir, pylon_texture_path
             from .osm_downloader import download_osm_for_patch
             from .mesh_converter import import_grouped_meshes_to_blender, cleanup_buildings_collection
         except ImportError as e:
@@ -611,6 +620,7 @@ class CONDOR_OT_export_condor(Operator):
                     polyskel_max_vertices=props.polyskel_max_vertices,
                     flat_roof_merge=props.flat_roof_merge,
                     flat_roof_terrain_photo=props.flat_roof_terrain_photo,
+                    generate_powerlines=props.generate_powerlines,
                 )
                 config.osm_path = osm_path
 
@@ -625,12 +635,21 @@ class CONDOR_OT_export_condor(Operator):
                     errors.append(f"Patch {patch_id}: {error_msg}")
                     continue
 
-                # Per-patch texture map: points the merged flat_roof object at the
-                # patch orthophoto t<patch>.dds (instead of the Roof1.dds placeholder)
-                # only when the terrain photo is enabled. Textures are referenced by
-                # bare filename; the Landscape Editor adds the Texture/ folder on c3d
-                # conversion (Andy, v0.8.7).
+                # Per-patch texture map for Blender material assignment / preview:
+                # points the merged flat_roof object at the patch orthophoto
+                # t<patch>.dds (instead of the Roof1.dds placeholder) only when the
+                # terrain photo is enabled.
                 tex_map = build_texture_map(patch_id, props.flat_roof_terrain_photo)
+
+                # Condor MTL variant: the new Landscape Editor (Uros) rewrites a
+                # "T_" prefix on c3d conversion to the landscape ground-texture path
+                # (Landscapes\<name>\Textures\). That prefix is ONLY for the flat-roof
+                # orthophoto when "ground textures on roofs" is enabled; all tiled
+                # atlases (and pylons.dds) stay bare and the LE resolves them from
+                # Autogen\Textures automatically (Wiek, 2026-06-08).
+                condor_tex_map = dict(tex_map)
+                if props.flat_roof_terrain_photo and 'flat_roof' in condor_tex_map:
+                    condor_tex_map['flat_roof'] = "T_" + condor_tex_map['flat_roof']
 
                 # Select which LOD groups to export
                 lods = []
@@ -640,16 +659,17 @@ class CONDOR_OT_export_condor(Operator):
                     lods.append(("LOD1", result.grouped_lod1))
 
                 for lod_name, groups in lods:
-                    # Condor scenery expects the main object as o<patch>.obj (no LOD0
-                    # suffix); LOD1 keeps an explicit suffix.
-                    fname = (
-                        f"o{patch_id}.obj" if lod_name == "LOD0"
-                        else f"o{patch_id}_{lod_name}.obj"
-                    )
+                    # Naming convention for the current Landscape Editor (Wiek, after
+                    # talking to Uros, 2026-06-09): LOD0 is o<patch>.obj with NO suffix,
+                    # LOD1 is o<patch>_LOD1.obj — each with its matching .mtl. The bare
+                    # LOD0 name keeps backwards compatibility with the current LE.
+                    # Reverts the v0.8.8 explicit _LOD0 suffix back to the v0.8.5 scheme.
+                    suffix = "" if lod_name == "LOD0" else f"_{lod_name}"
+                    fname = f"o{patch_id}{suffix}.obj"
                     out_obj = os.path.join(paths['autogen'], fname)
                     try:
                         export_condor_obj_mtl(
-                            groups, out_obj, tex_map,
+                            groups, out_obj, condor_tex_map,
                             comment=f"{lod_name} - Patch {patch_id} (Condor-ready)",
                             axis_swap=CONDOR_AXIS_SWAP,
                             triangulate=CONDOR_EXPORT_TRIANGULATE,
@@ -658,6 +678,23 @@ class CONDOR_OT_export_condor(Operator):
                         files_written.append(out_obj)
                     except Exception as e:
                         errors.append(f"Patch {patch_id} {lod_name}: export failed: {e}")
+
+                # Ship Pylons.dds next to the export so the Condor sim resolves the
+                # 'pylones' material. The OBJ/MTL reference it by bare filename; the
+                # building atlases already live in Autogen/Textures, so the pylon
+                # texture goes there too (Wiek Q18: pylons texture in autogen/Textures).
+                if props.generate_powerlines:
+                    src_tex = pylon_texture_path()
+                    if src_tex:
+                        import shutil
+                        tex_out_dir = os.path.join(paths['autogen'], "Textures")
+                        os.makedirs(tex_out_dir, exist_ok=True)
+                        dst_tex = os.path.join(tex_out_dir, os.path.basename(src_tex))
+                        if not os.path.exists(dst_tex):
+                            try:
+                                shutil.copy2(src_tex, dst_tex)
+                            except Exception as e:
+                                errors.append(f"Patch {patch_id}: could not copy Pylons.dds: {e}")
 
                 # Optionally import into Blender for preview (single-patch friendly)
                 if props.import_to_blender:
@@ -670,6 +707,9 @@ class CONDOR_OT_export_condor(Operator):
                     if preview_groups:
                         texture_dir = os.path.join(paths['autogen'], "Textures")
                         landscape_texture_dir = os.path.join(paths['landscape'], "Textures")
+                        preview_extra_dirs = [landscape_texture_dir]
+                        if props.generate_powerlines:
+                            preview_extra_dirs.append(pylon_assets_dir())
                         collection_name = f"Condor_{props.landscape_name}_{patch_id}"
                         cleanup_buildings_collection(collection_name)
                         try:
@@ -678,7 +718,7 @@ class CONDOR_OT_export_condor(Operator):
                                 collection_name=collection_name,
                                 texture_dir=texture_dir,
                                 texture_map=tex_map,
-                                extra_texture_dirs=[landscape_texture_dir],
+                                extra_texture_dirs=preview_extra_dirs,
                             )
                             imported_objects += len(objs)
                         except Exception as e:

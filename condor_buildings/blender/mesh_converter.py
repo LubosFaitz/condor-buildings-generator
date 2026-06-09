@@ -107,6 +107,55 @@ def _add_uv_layer(mesh: bpy.types.Mesh, mesh_data) -> None:
                         uv_layer.data[loop_idx].uv = (uv[0], uv[1])
 
 
+def _material_has_image(mat: bpy.types.Material) -> bool:
+    """
+    True if the material already has an Image Texture node with a loaded image.
+
+    Used to detect "white" materials that were created before their .dds was in
+    the Textures folder, so they can be healed (textured) on a later run instead
+    of being reused untextured.
+    """
+    if not mat.use_nodes or not mat.node_tree:
+        return False
+    return any(
+        node.type == 'TEX_IMAGE' and node.image is not None
+        for node in mat.node_tree.nodes
+    )
+
+
+def _attach_texture_node(mat: bpy.types.Material, texture_path: str) -> None:
+    """
+    Add an Image Texture node to a node-based material and wire it to Base Color.
+
+    Settings match Wiek's reference: Linear interpolation, Flat projection,
+    Repeat extension, sRGB color space, Straight alpha.
+    """
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+
+    # Get the default Principled BSDF (created by use_nodes=True)
+    principled = nodes.get("Principled BSDF")
+
+    # Create Image Texture node
+    tex_node = nodes.new(type='ShaderNodeTexImage')
+    tex_node.location = (-300, 300)
+
+    # Load image
+    image = bpy.data.images.load(texture_path)
+    image.colorspace_settings.name = 'sRGB'
+    image.alpha_mode = 'STRAIGHT'
+    tex_node.image = image
+
+    # Settings: Linear interpolation, Flat projection, Repeat
+    tex_node.interpolation = 'Linear'
+    tex_node.projection = 'FLAT'
+    tex_node.extension = 'REPEAT'
+
+    # Connect Color -> Base Color
+    if principled is not None:
+        links.new(tex_node.outputs['Color'], principled.inputs['Base Color'])
+
+
 def _create_material(
     name: str,
     texture_path: Optional[str] = None
@@ -127,34 +176,13 @@ def _create_material(
     """
     mat = bpy.data.materials.new(name=name)
     mat.use_nodes = True
-    nodes = mat.node_tree.nodes
-    links = mat.node_tree.links
-
-    # Get the default Principled BSDF (already created by use_nodes=True)
-    principled = nodes.get("Principled BSDF")
 
     if texture_path:
         if not os.path.isfile(texture_path):
             print(f"[Condor] WARNING: texture file not found: {texture_path}")
         else:
             print(f"[Condor] Loading texture: {texture_path}")
-            # Create Image Texture node
-            tex_node = nodes.new(type='ShaderNodeTexImage')
-            tex_node.location = (-300, 300)
-
-            # Load image
-            image = bpy.data.images.load(texture_path)
-            image.colorspace_settings.name = 'sRGB'
-            image.alpha_mode = 'STRAIGHT'
-            tex_node.image = image
-
-            # Settings: Linear interpolation, Flat projection, Repeat
-            tex_node.interpolation = 'Linear'
-            tex_node.projection = 'FLAT'
-            tex_node.extension = 'REPEAT'
-
-            # Connect Color → Base Color
-            links.new(tex_node.outputs['Color'], principled.inputs['Base Color'])
+            _attach_texture_node(mat, texture_path)
     else:
         print(f"[Condor] Material '{name}': no texture path provided")
 
@@ -186,6 +214,18 @@ def _find_texture_file(texture_dir: str, texture_filename: str) -> Optional[str]
                 print(f"[Condor] Case-insensitive match: '{entry}' for '{texture_filename}'")
                 return match
 
+    return None
+
+
+def _find_texture_in_dirs(
+    search_dirs: List[str],
+    texture_filename: str,
+) -> Optional[str]:
+    """Return the first match for texture_filename across search_dirs, or None."""
+    for d in search_dirs:
+        path = _find_texture_file(d, texture_filename)
+        if path:
+            return path
     return None
 
 
@@ -224,16 +264,24 @@ def _assign_material(
 
     search_dirs = [d for d in (texture_dirs or []) if d]
 
-    # Reuse existing material if already created
+    # Reuse existing material if already created (avoids duplicates across patches).
     if mat_name in bpy.data.materials:
         mat = bpy.data.materials[mat_name]
+        # Self-heal: a material first created before its .dds was in the Textures
+        # folder exists but is "white" (no Image Texture node). Reusing it as-is
+        # leaves the object untextured even after the user later copies the texture
+        # in (and a plain "Clear Buildings" doesn't help — the material lingers as
+        # orphan data and gets reused). So if it has no image and the texture is now
+        # present, attach it instead of reusing the empty material — no manual
+        # delete needed. (Reported by Lubos Faitz, 2026-06-09.)
+        if not _material_has_image(mat):
+            texture_path = _find_texture_in_dirs(search_dirs, texture_filename)
+            if texture_path:
+                print(f"[Condor] Healing material '{mat_name}' with now-available texture: {texture_path}")
+                _attach_texture_node(mat, texture_path)
     else:
         # Search each candidate directory in order
-        texture_path = None
-        for d in search_dirs:
-            texture_path = _find_texture_file(d, texture_filename)
-            if texture_path:
-                break
+        texture_path = _find_texture_in_dirs(search_dirs, texture_filename)
 
         if not texture_path:
             print(f"[Condor] Texture NOT FOUND: '{texture_filename}' in {search_dirs}")

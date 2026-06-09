@@ -403,6 +403,11 @@ def _create_building_record(
     if not has_explicit_height and floors != estimated_floors:
         height_m = floors * 3.0
 
+    # Clamp absurd OSM values (e.g. building:levels="233" typo on a house).
+    floors, height_m = _clamp_building_size(
+        floors, height_m, tags, osm_id, has_explicit_height
+    )
+
     # Parse roof pitch
     roof_pitch_deg = _parse_roof_pitch(tags)
 
@@ -426,6 +431,54 @@ def _create_building_record(
         floor_z=0.0,  # Will be computed later
         seed=seed,
     )
+
+
+def _clamp_building_size(
+    floors: int,
+    height_m: float,
+    tags: Dict[str, str],
+    osm_id: str,
+    has_explicit_height: bool,
+) -> Tuple[int, float]:
+    """Clamp clearly-bad OSM sizes (typos) to sane limits.
+
+    OSM is community-edited, so a single bad tag (e.g. building:levels="233"
+    on a house) produces an absurd ~700m skyscraper. We clamp floors/height to
+    config caps and emit a WARNING with the OSM id + address so it can be
+    reported upstream. Generous caps never clip a real building in low-rise
+    scenery (The Shard, tallest in the UK, is 72 floors / 310m).
+    """
+    from ..config import MAX_BUILDING_LEVELS, MAX_BUILDING_HEIGHT_M
+
+    orig_floors, orig_height = floors, height_m
+    clamped = False
+
+    if floors > MAX_BUILDING_LEVELS:
+        floors = MAX_BUILDING_LEVELS
+        clamped = True
+        if not has_explicit_height:
+            height_m = floors * 3.0
+
+    if height_m > MAX_BUILDING_HEIGHT_M:
+        height_m = MAX_BUILDING_HEIGHT_M
+        floors = max(1, min(floors, round(height_m / 3.0)))
+        clamped = True
+
+    if clamped:
+        addr_parts = [
+            tags.get('addr:housenumber', ''),
+            tags.get('addr:street', ''),
+            tags.get('addr:city', ''),
+        ]
+        addr = ' '.join(p for p in addr_parts if p).strip() or 'no address'
+        logger.warning(
+            "Clamped absurd OSM size on way %s (%s, building=%s): "
+            "floors %s->%s, height %.1fm->%.1fm (likely an OSM tag typo)",
+            osm_id, addr, tags.get('building', 'yes'),
+            orig_floors, floors, orig_height, height_m,
+        )
+
+    return floors, height_m
 
 
 def _parse_height(tags: Dict[str, str]) -> Optional[float]:
