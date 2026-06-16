@@ -253,6 +253,11 @@ class MeshData:
         """
         Validate mesh integrity.
 
+        Detects empty meshes, out-of-range face indices, faces with fewer than
+        3 corners, and degenerate faces that reuse a vertex index (which show up
+        as zero-length "collapsed" edges and corrupted faces in Blender and
+        freeze Edit Mode). Also checks that face_uvs stays parallel to faces.
+
         Returns:
             List of validation error messages (empty if valid)
         """
@@ -274,6 +279,31 @@ class MeshData:
                         f"Face {i} has invalid vertex index {idx} "
                         f"(valid range: 1-{max_idx})"
                     )
+
+            # Degenerate face: a vertex index used more than once means a
+            # collapsed (zero-length) edge / corrupted face. These freeze
+            # Blender's Edit Mode, so flag them explicitly.
+            if len(set(face)) != len(face):
+                errors.append(
+                    f"Face {i} has duplicate vertex indices {face} "
+                    f"(collapsed edge / corrupted face)"
+                )
+
+        # face_uvs, when present, must stay parallel to faces (same count, one
+        # UV index per corner) or the exported UV mapping desyncs.
+        if self.face_uvs:
+            if len(self.face_uvs) != len(self.faces):
+                errors.append(
+                    f"face_uvs count ({len(self.face_uvs)}) does not match "
+                    f"faces count ({len(self.faces)})"
+                )
+            else:
+                for i, (face, face_uv) in enumerate(zip(self.faces, self.face_uvs)):
+                    if len(face_uv) != len(face):
+                        errors.append(
+                            f"Face {i} has {len(face)} vertices but "
+                            f"{len(face_uv)} UV indices"
+                        )
 
         return errors
 
@@ -361,16 +391,52 @@ class MeshData:
                 coord_to_index[key] = new_idx
                 old_to_new[old_idx] = new_idx
 
-        # Remap face indices
+        # Remap face indices, collapsing duplicate vertices created by the merge.
+        #
+        # When two distinct vertices round to the same coordinate, a face that
+        # referenced both now references one index more than once. That produces
+        # zero-length ("collapsed") edges and corrupted faces with duplicate
+        # vertices, which freeze Blender's Edit Mode (Lubos's report, v0.8.13)
+        # and bloat the exported Condor geometry. We drop the duplicate indices
+        # (keeping the first occurrence) and discard any face left with fewer
+        # than 3 unique vertices, keeping face_uvs parallel to faces.
+        faces_parallel_uvs = len(self.face_uvs) == len(self.faces)
         new_faces: List[List[int]] = []
-        for face in self.faces:
-            new_face = [old_to_new[idx] for idx in face]
-            new_faces.append(new_face)
+        new_face_uvs: List[List[int]] = []
+        degenerate_faces_removed = 0
+
+        for face_pos, face in enumerate(self.faces):
+            remapped = [old_to_new[idx] for idx in face]
+            src_uv = self.face_uvs[face_pos] if faces_parallel_uvs else None
+
+            seen = set()
+            clean_face: List[int] = []
+            clean_uv: List[int] = []
+            for corner_pos, v_idx in enumerate(remapped):
+                if v_idx in seen:
+                    continue  # duplicate corner -> collapsed edge, skip it
+                seen.add(v_idx)
+                clean_face.append(v_idx)
+                if src_uv is not None and corner_pos < len(src_uv):
+                    clean_uv.append(src_uv[corner_pos])
+
+            if len(clean_face) < 3:
+                # Sliver collapsed to a line or point -> not a real face.
+                degenerate_faces_removed += 1
+                continue
+
+            new_faces.append(clean_face)
+            if faces_parallel_uvs:
+                new_face_uvs.append(clean_uv)
 
         # Update mesh data
         self.vertices = unique_vertices
         self.faces = new_faces
-        # UVs and face_uvs remain unchanged
+        if faces_parallel_uvs:
+            self.face_uvs = new_face_uvs
+        # The UV coordinate pool (self.uvs) is intentionally left untouched;
+        # only the per-corner UV *indices* are dropped with their collapsed
+        # corners. Orphaned UVs are harmless (OBJ indexes UVs separately).
 
         optimized_count = len(self.vertices)
         removed = original_count - optimized_count
@@ -380,7 +446,8 @@ class MeshData:
             original_vertices=original_count,
             optimized_vertices=optimized_count,
             vertices_removed=removed,
-            reduction_percent=reduction
+            reduction_percent=reduction,
+            degenerate_faces_removed=degenerate_faces_removed,
         )
 
 
@@ -391,11 +458,13 @@ class OptimizeResult:
     optimized_vertices: int
     vertices_removed: int
     reduction_percent: float
+    degenerate_faces_removed: int = 0
 
     def __repr__(self) -> str:
         return (
             f"OptimizeResult(vertices: {self.original_vertices} -> {self.optimized_vertices}, "
-            f"removed: {self.vertices_removed} ({self.reduction_percent:.1f}%))"
+            f"removed: {self.vertices_removed} ({self.reduction_percent:.1f}%), "
+            f"degenerate_faces_removed: {self.degenerate_faces_removed})"
         )
 
 

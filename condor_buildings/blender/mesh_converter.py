@@ -8,6 +8,7 @@ Handles vertex conversion, face indexing, and UV coordinate mapping.
 import os
 
 import bpy
+import bmesh
 from typing import List, Optional, Dict
 
 # Import MeshData type for type hints (conditional to allow testing outside Blender)
@@ -60,9 +61,26 @@ def meshdata_to_blender(
     # Note: from_pydata expects vertices, edges, faces
     mesh.from_pydata(vertices, [], faces)
 
-    # Add UV layer if UVs exist
+    # Add UV layer if UVs exist. This MUST run before mesh.validate():
+    # _add_uv_layer assigns UVs by polygon index, and validate() may delete
+    # degenerate faces (renumbering the remaining polygons). Assigning UVs while
+    # the indices still match the pipeline, then validating, keeps UVs aligned —
+    # validate() drops a bad face together with its (now-correct) UV loops.
+    # (v0.8.13 ran validate() first and mis-assigned UVs — Lubos's report.)
     if mesh_data.uvs and mesh_data.face_uvs:
         _add_uv_layer(mesh, mesh_data)
+
+    # Safety net: strip any degenerate geometry (collapsed edges, duplicate-
+    # vertex faces) that would freeze Blender's Edit Mode (Lubos's report,
+    # v0.8.13). In the normal pipeline this is a no-op because
+    # MeshData.optimize() already removes such faces before conversion; it
+    # guards against any future generator that emits a degenerate face.
+    mesh.validate(verbose=False)
+
+    # Make faces render correctly without a manual "Recalculate Outside"
+    # (Shift+N) in Blender (Lubos's report). For flat-roof sheets this forces
+    # +Z (up); for closed building volumes it recalculates outward.
+    _recalc_normals_outside(mesh)
 
     # Update mesh to compute normals, etc.
     mesh.update()
@@ -105,6 +123,41 @@ def _add_uv_layer(mesh: bpy.types.Mesh, mesh_data) -> None:
                     if 0 <= uv_idx < len(mesh_data.uvs):
                         uv = mesh_data.uvs[uv_idx]
                         uv_layer.data[loop_idx].uv = (uv[0], uv[1])
+
+
+def _recalc_normals_outside(mesh: bpy.types.Mesh) -> None:
+    """
+    Orient face normals so the object renders correctly on import, removing the
+    need for a manual Edit Mode "Recalculate Outside" (Shift+N) — Lubos's report.
+
+    Two cases:
+      - Flat-roof sheet (every face horizontal, e.g. the merged 'flat_roof'
+        object): bmesh's recalc_face_normals is ambiguous for open planar sheets
+        and can point them down (invisible from above), so force +Z (up).
+      - Everything else (closed building volumes: walls + pitched/hipped roofs):
+        recalc_face_normals outward, exactly like Shift+N. This is a no-op when
+        the generator already wound faces outward; it only flips genuine
+        inversions, so it won't undo the gable-wall winding fix (v0.8.10).
+
+    UV loops are preserved: flipping/recalculating a face reverses its loop order
+    together with the UV corners, so UVs stay attached to their vertices.
+    """
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(mesh)
+        if not bm.faces:
+            return
+        bm.normal_update()
+        all_horizontal = all(abs(f.normal.z) > 0.999 for f in bm.faces)
+        if all_horizontal:
+            for f in bm.faces:
+                if f.normal.z < 0.0:
+                    f.normal_flip()
+        else:
+            bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+        bm.to_mesh(mesh)
+    finally:
+        bm.free()
 
 
 def _material_has_image(mat: bpy.types.Material) -> bool:

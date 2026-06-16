@@ -70,6 +70,10 @@ class PipelineStats:
     lod1_vertices_before_optimize: int = 0
     lod0_vertices_removed: int = 0
     lod1_vertices_removed: int = 0
+    # Degenerate faces (collapsed edges / duplicate-vertex faces) dropped during
+    # optimization. >0 means a patch had geometry that would freeze Blender's
+    # Edit Mode and bloat the Condor mesh; now auto-cleaned (v0.8.13).
+    degenerate_faces_removed: int = 0
     terrain_triangles: int = 0
     processing_time_ms: int = 0
     filtered_building_ids: List[str] = field(default_factory=list)
@@ -626,11 +630,13 @@ def run_pipeline(
         if not mesh.is_empty():
             opt_result = mesh.optimize(precision=4)
             stats.lod0_vertices_removed += opt_result.vertices_removed
+            stats.degenerate_faces_removed += opt_result.degenerate_faces_removed
 
     for name, mesh in lod1_groups.items():
         if not mesh.is_empty():
             opt_result = mesh.optimize(precision=4)
             stats.lod1_vertices_removed += opt_result.vertices_removed
+            stats.degenerate_faces_removed += opt_result.degenerate_faces_removed
 
     # Count mesh totals after optimization
     for name, mesh in lod0_groups.items():
@@ -664,6 +670,11 @@ def run_pipeline(
         logger.info(
             f"LOD1 optimization: {stats.lod1_vertices_before_optimize} -> {stats.lod1_vertices} vertices "
             f"({stats.lod1_vertices_removed} removed, {lod1_reduction:.1f}% reduction)"
+        )
+    if stats.degenerate_faces_removed > 0:
+        logger.info(
+            f"Removed {stats.degenerate_faces_removed} degenerate faces "
+            f"(collapsed edges / duplicate-vertex faces) during optimization"
         )
 
     # Step 7: Export (depends on output_mode)

@@ -6,9 +6,12 @@ polygons with holes. Used for flat roof generation.
 """
 
 from typing import List, Tuple, Optional
+import logging
 import math
 
 from ..models.geometry import Point2D
+
+logger = logging.getLogger(__name__)
 
 
 class TriangulationError(Exception):
@@ -86,29 +89,149 @@ def triangulate_polygon(ring: List[Point2D]) -> List[Tuple[int, int, int]]:
     return triangles
 
 
+def _strip_closing_vertex(ring: List[Point2D]) -> List[Point2D]:
+    """Return a copy of ring without a duplicated closing vertex (first == last)."""
+    if len(ring) >= 2 and ring[0].x == ring[-1].x and ring[0].y == ring[-1].y:
+        return list(ring[:-1])
+    return list(ring)
+
+
+def _triangulate_blender(
+    outer: List[Point2D],
+    holes: List[List[Point2D]],
+) -> Tuple[List[Point2D], List[Tuple[int, int, int]]]:
+    """
+    Triangulate an outer ring with holes using Blender's native tessellator.
+
+    ``mathutils.geometry.tessellate_polygon`` handles polygons with holes
+    natively and robustly (it is what Blender uses for its own geometry), so it
+    succeeds on the non-convex (L/U-shaped) city-block footprints where the
+    legacy bridge-and-earclip method fails. Available only inside Blender.
+
+    Returns (merged_points, triangles) with triangle indices into merged_points,
+    which is the outer ring followed by each hole in order.
+    """
+    from mathutils import Vector
+    from mathutils.geometry import tessellate_polygon
+
+    merged_points: List[Point2D] = list(outer)
+    rings_as_vectors = [[Vector((p.x, p.y, 0.0)) for p in outer]]
+    for hole in holes:
+        rings_as_vectors.append([Vector((p.x, p.y, 0.0)) for p in hole])
+        merged_points.extend(hole)
+
+    tris = tessellate_polygon(rings_as_vectors)
+    if not tris:
+        raise TriangulationError("Blender tessellate_polygon returned no triangles")
+
+    triangles = [(int(t[0]), int(t[1]), int(t[2])) for t in tris]
+    return (merged_points, triangles)
+
+
+def _triangulate_earcut(
+    outer: List[Point2D],
+    holes: List[List[Point2D]],
+) -> Tuple[List[Point2D], List[Tuple[int, int, int]]]:
+    """
+    Triangulate an outer ring with holes using the ``mapbox_earcut`` library.
+
+    Fallback for environments without Blender (e.g. CLI / unit tests). Raises
+    ImportError if mapbox_earcut (or numpy) is not installed, so the caller can
+    fall through to the legacy method.
+
+    Returns (merged_points, triangles) with the same layout as
+    _triangulate_blender.
+    """
+    import numpy as np
+    import mapbox_earcut as earcut
+
+    merged_points: List[Point2D] = list(outer)
+    coords: List[List[float]] = [[p.x, p.y] for p in outer]
+    ring_ends = [len(outer)]
+    for hole in holes:
+        coords.extend([p.x, p.y] for p in hole)
+        merged_points.extend(hole)
+        ring_ends.append(len(coords))
+
+    verts = np.array(coords, dtype=np.float64).reshape(-1, 2)
+    result = earcut.triangulate_float64(verts, np.array(ring_ends))
+    if len(result) == 0:
+        raise TriangulationError("mapbox_earcut returned no triangles")
+
+    flat = [int(i) for i in result]
+    triangles = [
+        (flat[i], flat[i + 1], flat[i + 2]) for i in range(0, len(flat), 3)
+    ]
+    return (merged_points, triangles)
+
+
 def triangulate_with_holes(
     outer: List[Point2D],
     holes: List[List[Point2D]]
 ) -> Tuple[List[Point2D], List[Tuple[int, int, int]]]:
     """
-    Triangulate a polygon with holes using bridge-and-earclip method.
+    Triangulate a polygon with holes, used for flat roofs of buildings with an
+    inner courtyard (OSM multipolygon: outer ring + inner ring(s)).
 
-    Creates bridges connecting holes to outer ring, then triangulates
-    the resulting simple polygon.
+    Tries three strategies in order, so a courtyard always becomes an opening in
+    the roof instead of being covered by a solid roof:
+
+      1. Blender's native ``mathutils.geometry.tessellate_polygon`` — robust for
+         the non-convex (L/U-shaped) city blocks where bridging fails. Used in
+         the Blender addon (the production path).
+      2. ``mapbox_earcut`` — for non-Blender environments (CLI / unit tests),
+         if installed.
+      3. Legacy bridge-and-earclip (``_triangulate_with_holes_legacy``) — last
+         resort; fragile on non-convex outer rings.
 
     Args:
         outer: Outer ring vertices (CCW order)
         holes: List of hole rings (CW order each)
 
     Returns:
-        (merged_vertices, triangles) where triangles are indices
-        into merged_vertices
+        (merged_vertices, triangles) where triangles are indices into
+        merged_vertices (outer ring first, then each hole in order).
 
     Raises:
-        TriangulationError: If triangulation fails
+        TriangulationError: If every strategy fails. The caller (roof_flat)
+        then falls back to triangulating the outer ring only (holes ignored).
+    """
+    if not holes:
+        triangles = triangulate_polygon(outer)
+        return (outer, triangles)
 
-    FALLBACK: If this function raises an error, the caller should
-    fall back to triangulating outer ring only (ignoring holes).
+    outer_clean = _strip_closing_vertex(outer)
+    holes_clean = [_strip_closing_vertex(h) for h in holes if len(h) >= 3]
+
+    if len(outer_clean) < 3:
+        raise TriangulationError("Outer ring has fewer than 3 distinct vertices")
+
+    # Strategy 1: Blender's native tessellator (production path).
+    try:
+        return _triangulate_blender(outer_clean, holes_clean)
+    except Exception as exc:  # mathutils missing (CLI) or empty result
+        logger.debug("Blender tessellation unavailable/failed: %s", exc)
+
+    # Strategy 2: mapbox_earcut (CLI / unit-test environments).
+    try:
+        return _triangulate_earcut(outer_clean, holes_clean)
+    except Exception as exc:  # not installed or failed
+        logger.debug("mapbox_earcut unavailable/failed: %s", exc)
+
+    # Strategy 3: legacy bridge-and-earclip (last resort; may raise).
+    return _triangulate_with_holes_legacy(outer_clean, holes_clean)
+
+
+def _triangulate_with_holes_legacy(
+    outer: List[Point2D],
+    holes: List[List[Point2D]]
+) -> Tuple[List[Point2D], List[Tuple[int, int, int]]]:
+    """
+    Legacy bridge-and-earclip triangulation (the original triangulate_with_holes).
+
+    Creates bridges connecting holes to the outer ring, then triangulates the
+    resulting simple polygon. Fragile for non-convex outer rings — kept only as a
+    last-resort fallback behind the Blender / earcut strategies above.
     """
     if not holes:
         triangles = triangulate_polygon(outer)

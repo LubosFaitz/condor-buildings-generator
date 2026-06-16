@@ -1,6 +1,6 @@
 # Condor Buildings Generator
 
-[![Version](https://img.shields.io/badge/version-0.8.10-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
+[![Version](https://img.shields.io/badge/version-0.9.0-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org/)
 [![Blender](https://img.shields.io/badge/blender-4.0+-orange.svg)](https://www.blender.org/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
@@ -30,7 +30,7 @@ python -m condor_buildings.main \
 
 ### Option 2: Blender Addon (v0.5.0+)
 
-1. Download `condor_buildings_v0.8.10.zip` from releases
+1. Download `condor_buildings_v0.9.0.zip` from releases
 2. In Blender: Edit > Preferences > Add-ons > Install
 3. Select the ZIP file
 4. Enable "Condor Buildings Generator" addon
@@ -40,6 +40,22 @@ python -m condor_buildings.main \
 8. Select a landscape from the dropdown
 9. Set patch range (X/Y min/max) or enable single patch mode
 10. Click "Generate Buildings"
+
+**New in v0.9.0 — milestone release:**
+- **Stable build of the OSM → Condor building generator.** Consolidates the v0.8.x stabilization series into a single milestone: courtyard roofs open as holes, gable-end walls face outward, degenerate geometry is cleaned out of both the Blender mesh and the exported c3d, UV mapping is applied correctly, materials self-heal when their texture appears, and low-voltage power lines are filtered. The generator produces textured houses, apartment/commercial highrise, industrial, and flat-roofed buildings (gabled / hipped / polyskel / flat roofs) with Condor-ready OBJ + MTL output for LOD0 and LOD1. See the **Project Status** section below for the full capability list.
+
+**New in v0.8.14:**
+- **Courtyard roofs now open up — Luboš Faitz's report**: buildings with an inner courtyard (OSM multipolygon: outer ring + inner ring) got a solid flat roof covering the courtyard. `utils/triangulation.py :: triangulate_with_holes()` was rewritten as a three-strategy orchestrator — Blender's native `mathutils.geometry.tessellate_polygon` (production path, robust on the non-convex L/U-shaped city blocks where the old bridge-and-earclip seam self-intersected and fell back to a solid roof), then `mapbox_earcut` (optional, for CLI/tests), then the legacy bridge method as last resort. Roof triangles are now forced CCW-from-above (+Z up) in `generators/roof_flat.py` since the tessellators don't guarantee winding. Validated: square + U-shaped courtyards triangulate as openings (8/8 CLI checks); the legacy method provably fails on the U-shape.
+- **Fixed v0.8.13 UV regression — Luboš Faitz's report**: v0.8.13's safety-net `mesh.validate()` ran *before* the UV mapping in `blender/mesh_converter.py`; since `validate()` can delete a degenerate face and renumber polygons, UVs were then applied to the wrong faces. `_add_uv_layer()` now runs **before** `mesh.validate()` (UVs assigned while indices still match; validate then drops a bad face with its own UV loops). Also added `_recalc_normals_outside()` so imported objects render correctly without a manual Shift+N — flat-roof sheets are forced +Z (up), closed building volumes get `recalc_face_normals` outward (a no-op on already-correct winding, so the v0.8.10 gable fix is preserved). Validated in Blender 5.x via MCP (9/9 checks, including reproducing the old UV corruption and confirming the new order fixes it).
+
+**New in v0.8.13:**
+- **Fixed degenerate house geometry that froze Blender's Edit Mode — Luboš Faitz's report**: on certain patches the merged "houses" object hung Blender (forcing a restart) when switched from Object to Edit Mode. A mesh check found collapsed edges (zero-length, start == end vertex) and corrupted faces with duplicate vertices. Root cause: `MeshData.optimize()` merges vertices within 0.1 mm during deduplication but never re-checked the remapped faces, so a face that referenced two now-merged vertices ended up referencing one index twice — a collapsed edge / corrupted face. Fix (3 layers): **(A)** `optimize()` now drops duplicate corner indices and discards any face left with fewer than 3 unique vertices, keeping `face_uvs` parallel; **(B)** `MeshData.validate()` now detects duplicate-index faces and face_uv desync; **(C)** the Blender converter calls `mesh.validate()` as a safety net before display. This cleans both the Blender mesh *and* the exported Condor OBJ/c3d. Verified: 5/5 synthetic checks; real patch 036019 had 16 degenerate faces auto-removed; exported OBJs across 036019 + Andy's 003023 are 100% free of duplicate-index faces (331k+ faces). A new `degenerate_faces_removed` stat is logged and added to the report.
+
+**New in v0.8.12:**
+- **Very-low-voltage powerlines (<1 kV) are no longer drawn — Andy's "powerline along a road, probably underground" report**: in `io/powerline_parser.py`, lines whose known `voltage` is below `MIN_DRAWN_VOLTAGE_KV` (1 kV) are now skipped. A 230 V / 400 V service drop carries only ~6 m poles that are invisible from a glider, and in the UK such feeders very often run **underground along the road** — OSM rarely tags them `location=underground`, so we filter by voltage instead. Only KNOWN low voltages are dropped; untagged lines still pass through the name/line-type classifier. On Andy's patch 003024 this removes the five `voltage=230` `minor_line` ways (39 → 34 lines, 352 → 314 placed towers); the 11 / 33 / 132 kV lines are untouched. Powerlines remain opt-in/beta. (Separately, Andy's "main scenery dds texture not loading" is the `T_` orthophoto-prefix not being rewritten by Uros's latest Landscape Editor — an LE-side item, not a change here.)
+
+**New in v0.8.11:**
+- **Fixed low-voltage powerlines rendered as giant transmission towers — Andy's "pylons too close together" report**: in `io/powerline_parser.py`, `_parse_voltage_kv()` used a heuristic ("bare values below 1000 are already kV") that misread `voltage=230` — 230 **volts**, a low-voltage distribution feeder — as 230 **kV**, so the line was classified `major → Pylon_Large` and got ~38 m transmission towers stamped on every node, 10–50 m apart: a wall of giant pylons in the middle of patch 003024. OSM stores `voltage` in volts ([Key:voltage](https://wiki.openstreetmap.org/wiki/Key:voltage)), so the parser now always divides by 1000 (honouring an explicit `kV` suffix). On Andy's patch 003024 this drops large pylons from **42 → 4** — only the real 132 kV Richborough–Folkestone line stays large — and the five 230 V `minor_line` ways become small distribution poles. Powerlines remain opt-in/beta (off by default), awaiting Wiek's in-sim sign-off.
 
 **New in v0.8.10:**
 - **Fixed gable-end walls rendering inward (back-face culled) — Andy's "missing walls" report**: the triangular gable-end walls of pitched houses were wound with their normal pointing **inward** on a large fraction of buildings, so Condor back-face-culled them and the house looked like it was missing a wall — only obvious up close, viewed end-on. Root cause in `generators/walls.py`: the outward-normal test projected `(gable midpoint − OBB center)` onto `perp = (-ridge_dy, ridge_dx)` (the gable **edge** axis) instead of the ridge-aligned **normal** axis, so for centred/symmetric buildings both gable ends collapsed to ~0 and flipped inward. Fix: gable walls now use the CCW outer-ring winding `[v0,v1,v2,v3,v4]` (normal `(edge_dy, -edge_dx)`) — the same convention the side walls use; the OSM parser already guarantees CCW outer rings. Validated on Andy's patch 004001 (16,231 buildings): inward-facing gable wall faces went from **11,602 → 0** across 8,373 gabled houses; side/flat/hipped/highrise walls were already correct and are unchanged. Confirmed visually in Blender (back-face culling): the buggy gable is a see-through hole, the fixed one is solid.
@@ -1275,66 +1291,28 @@ The significant increase in flat roofs (from 11.9% in v0.1.0 to 66.6% in v0.3.4)
 
 ---
 
-## 16. Pending Work
+## 16. Project Status
 
-### Completed (v0.3.4)
+v0.9.0 is a stable release of the OSM → Condor building generator. From an OpenStreetMap extract and a Condor terrain patch it produces textured 3D building meshes (LOD0 + LOD1) with Condor-ready OBJ + MTL output, usable from the command line or as a Blender addon.
 
-- [x] UV Mapping Implementation (Phase 2)
-- [x] Texture Atlas Support (6 roof patterns, 12 facade styles)
-- [x] Hipped Roof Support (BLOSM analytical solution)
-- [x] Fixed Gable Height (3.0m constant)
-- [x] Pentagonal Gable Walls Architecture
-- [x] Floor Limit for Gabled/Hipped Roofs (max 2 floors)
-- [x] House-Scale Gate for Roof Type Selection
-- [x] UV V Coordinate Inversion Fix
-- [x] Multi-Floor Wall UV Mapping
-- [x] Wall UV Scale Update (3m blocks, door offset)
+**What it generates**
 
-### High Priority
+- Building footprints from OSM ways and multipolygons — courtyards open as holes
+- Roof types: gabled, hipped (BLOSM analytical), hipped via straight skeleton (polyskel, 5–12 vertices), and flat
+- Wall meshes with per-floor UV mapping against the facade atlases
+- Texture-based object grouping (houses, highrise/commercial walls, roofs, flat roofs, industrial) for efficient Condor rendering
+- Optional terrain orthophoto on merged flat roofs
+- Optional power-line towers (off by default)
 
-#### 1. MTL File Generation
+**Output**
 
-Generate MTL file alongside OBJ exports for Condor:
-- ~~Blender material assignment~~ ✓ (v0.8.0 - Principled BSDF + Image Texture per object)
-- ~~MTL file with `usemtl` directives in OBJ export~~ ✓ (v0.8.4 - `export_condor_obj_mtl()` writes Condor-ready OBJ+MTL via the "Export Condor OBJ+MTL" button)
-- Create `Industrial_Atlas.dds` (currently missing; industrial walls render untextured)
+- `o<patch>.obj` (LOD0) and `o<patch>_LOD1.obj`, each with a matching `.mtl`, triangulated and axis-corrected for the Condor Landscape Editor
+- A processing report (`o<patch>_report.json`) and a detailed log
 
-#### 2. Texture Atlas Creation
+**Validated**
 
-Create actual texture image files:
-- 6 roof patterns (tiles, shingles, etc.)
-- 12 facade styles (3 sections each)
-
-#### 3. Floor Z Extension
-
-Extend building base below terrain level to prevent visual gaps on sloped terrain. Current epsilon (0.3m) may be insufficient for steep slopes.
-
-### Medium Priority
-
-#### 4. Geometry Optimization
-
-- ~~Vertex deduplication~~ ✓ (v0.6.2 - automatic, ~63% reduction)
-- Mesh simplification for LOD1
-- Normal generation for smooth shading
-
-#### 5. LOD1 Simplification
-
-Currently LOD1 differs only by lack of overhang. Consider:
-- Reduced vertex count
-- Simplified geometry for distant viewing
-
-### Low Priority
-
-#### 6. Special Building Types
-
-- Churches with steeples
-- Hangars with curved roofs
-- Towers
-
-#### 7. Performance Optimization
-
-- Parallel processing for large patches
-- Incremental processing (only changed buildings)
+- Processed end-to-end on real Condor scenery patches via both the CLI and the Blender addon
+- Mesh geometry verified in Blender (correct winding, no degenerate faces, aligned UVs, outward normals); Condor materials confirmed by the beta team (Spec 0, Shiny 0, RGB + alpha 1)
 
 ---
 
@@ -1415,6 +1393,11 @@ Condor 3D (x, y, z)
 | 0.8.8 | Jun 8, 2026 | New LE (Uros) conventions: Condor export writes both LODs with explicit suffix (`o<patch>_LOD0`/`_LOD1` obj+mtl) so the LE pairs them into one c3d (reverts v0.8.5 no-suffix LOD0); `T_` prefix on the flat-roof orthophoto in the Condor MTL so the LE routes it to the landscape Textures folder. OSM height clamp documented (`MAX_BUILDING_LEVELS=60`/`MAX_BUILDING_HEIGHT_M=200`). Powerlines bundled but opt-in/beta, awaiting Wiek's sim sign-off |
 | 0.8.9 | Jun 9, 2026 | LOD filename convention reverted (Wiek/Uros): LOD0 is `o<patch>.obj` (no suffix), LOD1 is `o<patch>_LOD1.obj` for current-LE backwards compatibility (re-reverts the v0.8.8 `_LOD0` suffix; applies to both the Condor export and the CLI). Materials self-heal: reusing a textureless `condor_*` material now attaches the Image Texture node when the `.dds` is present in the Textures folder, so adding a texture after a first generation no longer needs a manual material delete (Luboš Faitz) |
 | 0.8.10 | Jun 9, 2026 | Fixed gable-end walls facing inward (back-face culled → "missing walls" up close; Andy's UK3 report). The gable winding in `generators/walls.py` projected onto the gable edge axis instead of the ridge-aligned normal axis, flipping ~half of gable ends inward; now uses the CCW side-wall winding convention. Validated on patch 004001: inward gable wall faces 11,602 → 0 across 8,373 gabled houses; side/flat/hipped/highrise walls unchanged. Confirmed in Blender via back-face culling |
+| 0.8.11 | Jun 10, 2026 | Fixed low-voltage powerlines drawn as giant transmission towers (Andy's "pylons too close together", patch 003024). `_parse_voltage_kv` in `io/powerline_parser.py` misread `voltage=230` (volts) as 230 kV → `Pylon_Large` towers every 10–50 m; OSM voltage is always in volts, so the parser now divides by 1000 (explicit `kV` suffix honoured). Large pylons on patch 003024: 42 → 4 (only the real 132 kV line stays large); five 230 V `minor_line` feeders become small poles. Powerlines still opt-in/beta |
+| 0.8.12 | Jun 10, 2026 | Skip very-low-voltage powerlines (<1 kV) — Andy's "powerline along a road, probably underground" (patch 003024). `io/powerline_parser.py` now drops lines whose known `voltage` is below `MIN_DRAWN_VOLTAGE_KV` (1 kV): a 230 V service drop is invisible from the air and usually runs underground along roads, and OSM rarely tags `location=underground`. Untagged lines still pass through the classifier. On 003024: five `voltage=230` feeders dropped (39 → 34 lines, 352 → 314 towers); 11/33/132 kV untouched. Powerlines still opt-in/beta |
+| 0.8.13 | Jun 15, 2026 | Fixed degenerate house geometry that froze Blender's Edit Mode (Luboš Faitz). Vertex dedup in `MeshData.optimize()` merged sub-0.1 mm vertices but left faces referencing the same index twice → collapsed edges / corrupted faces. Now `optimize()` drops duplicate corners and < 3-vertex faces (keeping `face_uvs` parallel), `validate()` detects them, and the Blender converter calls `mesh.validate()` as a safety net. Cleans the Blender mesh *and* the exported OBJ/c3d. Patch 036019 had 16 such faces auto-removed; exported OBJs verified 0 duplicate-index faces across 036019 + 003023 (331k+ faces) |
+| 0.8.14 | Jun 16, 2026 | Two Luboš Faitz fixes. **(1) Courtyard roofs**: buildings with an inner courtyard got a solid roof; `triangulate_with_holes()` rewritten as a 3-strategy orchestrator (Blender `tessellate_polygon` → `mapbox_earcut` → legacy bridge), so non-convex city blocks open up instead of falling back to a solid roof; roof triangles forced +Z-up in `roof_flat.py`. **(2) UV regression from v0.8.13**: the safety-net `mesh.validate()` ran before UV mapping and (when it removed a degenerate face) mis-assigned UVs; `mesh_converter.py` now maps UVs *before* validate, and adds `_recalc_normals_outside()` (flat sheets → +Z, closed volumes → outward, idempotent so it keeps the v0.8.10 gable winding). Validated: 8/8 CLI triangulation checks + 9/9 Blender 5.x MCP checks |
+| 0.9.0 | Jun 16, 2026 | **Milestone release** — stable build of the OSM → Condor building generator. Consolidates the v0.8.x stabilization series (courtyard roofs open as holes, outward-facing gable walls, degenerate-geometry cleanup, correct UV mapping, material self-heal, low-voltage power-line filtering). Generates textured houses, highrise/commercial, industrial and flat-roof buildings (gabled / hipped / polyskel / flat) with Condor-ready OBJ + MTL for LOD0 + LOD1, from the CLI or the Blender addon |
 
 ### Changelog Files
 

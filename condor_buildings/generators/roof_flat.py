@@ -190,8 +190,16 @@ def _generate_roof_with_holes(
         uv_idx = mesh.add_uv(u, v)
         uv_indices.append(uv_idx)
 
-    # Add triangles with UVs
+    # Add triangles with UVs. tessellate_polygon / earcut don't guarantee a
+    # consistent winding, so force CCW-as-seen-from-above (+Z) — a flat roof
+    # must face up, otherwise some courtyard-roof triangles render inverted /
+    # back-face culled (Lubos's report, v0.8.14). Swapping b<->c reorders the
+    # vertex and UV corners together, so UVs stay attached to their vertices.
     for a, b, c in triangles:
+        pa, pb, pc = merged_vertices[a], merged_vertices[b], merged_vertices[c]
+        cross_z = (pb.x - pa.x) * (pc.y - pa.y) - (pb.y - pa.y) * (pc.x - pa.x)
+        if cross_z < 0.0:
+            b, c = c, b
         mesh.add_triangle_with_uvs(
             vertex_indices[a], vertex_indices[b], vertex_indices[c],
             uv_indices[a], uv_indices[b], uv_indices[c]

@@ -53,6 +53,16 @@ SUPPORT_VALUES = {"tower", "pole", "portal", "terminal"}
 VOLTAGE_LARGE_KV = 110.0
 VOLTAGE_MEDIUM_KV = 45.0
 
+# Powerlines below this voltage are NOT drawn at all. A real low-voltage feeder
+# (e.g. a 230 V / 400 V service drop) carries only ~6 m poles that are invisible
+# from a glider, and in the UK such lines very often run UNDERGROUND along the
+# road. OSM rarely tags them `location=underground`, so we filter by voltage
+# instead. Only lines with a KNOWN voltage below this are dropped; untagged lines
+# still pass through to the name/line-type classifier. (Andy's patch 003024: five
+# `voltage=230` minor_line feeders were being drawn as a line along a road that is
+# almost certainly underground, 2026-06-10.)
+MIN_DRAWN_VOLTAGE_KV = 1.0
+
 
 @dataclass
 class PowerPoint:
@@ -150,24 +160,32 @@ def _parse_voltage_kv(voltage: Optional[str]) -> Optional[float]:
     """
     Parse an OSM ``voltage`` tag value to kV.
 
-    OSM stores voltage in volts, sometimes as a semicolon-separated list for
-    multi-circuit lines (e.g. ``"110000;20000"``). We take the highest value
-    (the dominant circuit decides the tower type). Returns kV, or None if the
-    tag is missing/unparseable.
+    Per the OSM convention (Key:voltage) the value is in VOLTS — e.g. ``"230"``
+    is 230 V (low-voltage distribution), ``"11000"`` is 11 kV, ``"132000"`` is
+    132 kV. It may be a semicolon-separated list for multi-circuit lines (e.g.
+    ``"110000;20000"``); we take the highest value (the dominant circuit decides
+    the tower tier). An explicit ``kV`` suffix (rare/non-standard) is honoured.
+    Returns kV, or None if the tag is missing/unparseable.
+
+    NB: do NOT treat bare small numbers as kV. A real ``voltage=230`` low-voltage
+    feeder would otherwise read as 230 kV and get giant transmission towers (large
+    pylons) stamped on it every few metres — Andy's patch 003024 had five such
+    ``minor_line`` ways rendered as a wall of close-packed large pylons (2026-06-10).
     """
     if not voltage:
         return None
     best = None
     for part in voltage.replace(",", ";").split(";"):
-        token = part.strip().lower().replace("kv", "").replace("v", "").strip()
+        token = part.strip().lower()
+        is_kv = "kv" in token
+        token = token.replace("kv", "").replace("v", "").strip()
         if not token:
             continue
         try:
-            volts = float(token)
+            num = float(token)
         except ValueError:
             continue
-        # Heuristic: bare values >= 1000 are volts; small values are already kV.
-        kv = volts / 1000.0 if volts >= 1000 else volts
+        kv = num if is_kv else num / 1000.0
         if best is None or kv > best:
             best = kv
     return best
@@ -240,6 +258,7 @@ def parse_powerlines(
     lines: List[PowerLine] = []
     warnings: List[str] = []
     cable_ways = 0
+    low_voltage_ways = 0
     for way_elem in root.findall("way"):
         tags = {t.get("k"): t.get("v") for t in way_elem.findall("tag")}
         power_value = tags.get("power")
@@ -247,6 +266,14 @@ def parse_powerlines(
             cable_ways += 1  # usually underground; counted but not drawn
             continue
         if power_value not in LINE_VALUES:
+            continue
+
+        # Drop very-low-voltage feeders (likely underground / invisible from the
+        # air). Only when the voltage is KNOWN and below the threshold; untagged
+        # lines pass through (the classifier handles them by name/line-type).
+        kv = _parse_voltage_kv(tags.get("voltage"))
+        if kv is not None and kv < MIN_DRAWN_VOLTAGE_KV:
+            low_voltage_ways += 1
             continue
 
         points: List[PowerPoint] = []
@@ -284,6 +311,7 @@ def parse_powerlines(
     stats = {
         "support_nodes_total": support_node_total,
         "cable_ways_skipped": cable_ways,
+        "lines_low_voltage_skipped": low_voltage_ways,
         "lines_total": len(lines),
         "lines_major": sum(1 for l in lines if l.line_class == "major"),
         "lines_regional": sum(1 for l in lines if l.line_class == "regional"),
@@ -304,6 +332,8 @@ def parse_powerlines(
         f"Parsed {stats['lines_total']} powerlines "
         f"({stats['lines_major']} major / {stats['lines_regional']} regional / "
         f"{stats['lines_minor']} minor), {stats['supports_on_lines']} supports"
+        + (f"; skipped {low_voltage_ways} low-voltage (<{MIN_DRAWN_VOLTAGE_KV:g} kV) feeders"
+           if low_voltage_ways else "")
     )
 
     return PowerlineParseResult(lines=lines, stats=stats, warnings=warnings)
@@ -328,6 +358,8 @@ def format_report(result: PowerlineParseResult, patch_id: str = "") -> str:
     out.append(f"  Support nodes in whole file .. {s['support_nodes_total']} "
                f"(tower/pole/portal/terminal)")
     out.append(f"  Underground cable ways skipped {s['cable_ways_skipped']}")
+    out.append(f"  Low-voltage feeders skipped .. {s.get('lines_low_voltage_skipped', 0)} "
+               f"(<{MIN_DRAWN_VOLTAGE_KV:g} kV; not drawn)")
 
     out.append("")
     out.append("CROSS-PATCH (the hard part, per manual 6.4)")
