@@ -1434,6 +1434,8 @@ This project was developed by:
 
 - **Andy Souter** - Condor Scenery Designer & Beta Tester. Validated the export pipeline in real Condor sceneries and the Landscape Editor, and provided detailed feedback on c3d texture paths, empty-patch handling, vertex-count limits, and OSM building fidelity.
 
+- **Luboš Faitz** - Developer & Beta Tester. Reported and helped diagnose several core-generator fixes — courtyard roofs, degenerate geometry that froze Blender's Edit Mode, UV mapping, and material self-heal — contributing fix notes for each.
+
 - **Anthropic Claude Opus 4.5** (via Claude Code) - Software Development. Designed the solution architecture and implemented the foundational codebase for this project.
 
 - **Anthropic Claude Opus 4.6** (via Claude Code) - Software Development. Continued development from v0.6.3 onwards, including texture grouping, polyskel UV mapping, and ongoing improvements.
