@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(python -c 'import py_compile; [py_compile.compile\\(f, doraise=True\\) for f in [\"io/osm_parser.py\",\"blender/operators.py\",\"blender/batch_processing.py\"]]; print\\(\"SYNTAX OK\"\\)')",
+      "Bash(python -c 'import py_compile; py_compile.compile\\(\"blender/operators.py\", doraise=True\\); print\\(\"SYNTAX OK\"\\)')",
+      "Bash(find \"c:/Users/lubos/AppData/Roaming/Blender Foundation/Blender/5.1/scripts/addons/condor_buildings\" -maxdepth 2 -iname \"*.mcp.json\" -o -maxdepth 2 -iname \"mcp.json\" 2>/dev/null; echo \"---\"; ls -a \"c:/Users/lubos/AppData/Roaming/Blender Foundation/Blender/5.1/scripts/addons/condor_buildings/.claude\" 2>/dev/null; echo \"--- user mcp ---\"; ls -a \"c:/Users/lubos/.claude\" 2>/dev/null | grep -i mcp)",
+      "Read(//c/Users/lubos/.claude/**)",
+      "Bash(uv --version)",
+      "Bash(uvx --version)",
+      "Bash(python -m pip show blender-mcp)",
+      "mcp__blender__get_scene_info",
+      "mcp__blender__get_viewport_screenshot",
+      "mcp__blender__execute_blender_code",
+      "Bash(python -c 'import py_compile; [py_compile.compile\\(f, doraise=True\\) for f in [\"config.py\",\"io/powerline_parser.py\",\"generators/powerlines.py\",\"main.py\",\"blender/properties.py\",\"blender/panels.py\",\"blender/operators.py\"]]; print\\(\"SYNTAX OK\"\\)')",
+      "Bash(python -c 'import py_compile; py_compile.compile\\(\"blender/osm_downloader.py\", doraise=True\\); print\\(\"SYNTAX OK\"\\)')",
+      "Bash(python -c 'import py_compile; [py_compile.compile\\(f, doraise=True\\) for f in [\"generators/powerlines.py\",\"blender/properties.py\",\"blender/panels.py\"]]; print\\(\"SYNTAX OK\"\\)')",
+      "Bash(python -c 'import py_compile; py_compile.compile\\(\"generators/powerlines.py\", doraise=True\\); print\\(\"SYNTAX OK\"\\)')",
+      "Bash(python -c 'import py_compile; [py_compile.compile\\(f, doraise=True\\) for f in [\"blender/osm_downloader.py\",\"io/powerline_parser.py\",\"generators/powerlines.py\",\"main.py\"]]; print\\(\"SYNTAX OK\"\\)')",
+      "Bash(python -c 'import py_compile; py_compile.compile\\(\"io/powerline_parser.py\", doraise=True\\); print\\(\"SYNTAX OK\"\\)')",
+      "Bash(python -c 'import py_compile; [py_compile.compile\\(f, doraise=True\\) for f in [\"blender/osm_downloader.py\",\"io/powerline_parser.py\",\"main.py\",\"blender/operators.py\"]]; print\\(\"SYNTAX OK\"\\)')",
+      "WebFetch(domain:overpass-api.de)"
+    ]
+  }
+}

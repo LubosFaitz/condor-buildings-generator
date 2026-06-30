@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python zaloha_na_web.py)",
+      "Bash(python -c ' *)",
+      "Bash(ls \"c:\\\\Users\\\\lubos\\\\AppData\\\\Roaming\\\\Blender Foundation\\\\Blender\\\\5.1\\\\scripts\\\\addons\\\\condor_buildings\\\\\")",
+      "Read(//c/Users/lubos/AppData/Roaming/Blender Foundation/Blender/5.1/scripts/addons/**)",
+      "Bash(python -c 'import py_compile; py_compile.compile\\(\"io/obj_exporter.py\", doraise=True\\); print\\(\"SYNTAX OK\"\\)')",
+      "Bash(python -c 'import py_compile; [py_compile.compile\\(f, doraise=True\\) for f in [\"blender/properties.py\",\"blender/panels.py\",\"blender/batch_processing.py\"]]; print\\(\"SYNTAX OK\"\\)')",
+      "Bash(python -c 'import py_compile; py_compile.compile\\(\"blender/panels.py\", doraise=True\\); print\\(\"SYNTAX OK\"\\)')",
+      "Bash(python -c 'import py_compile; [py_compile.compile\\(f, doraise=True\\) for f in [\"io/aerialway_parser.py\",\"generators/aerialway.py\",\"config.py\",\"main.py\",\"blender/properties.py\",\"blender/panels.py\",\"blender/operators.py\",\"blender/batch_processing.py\"]]; print\\(\"VSE SYNTAX OK\"\\)')",
+      "Bash(python -c 'import py_compile; py_compile.compile\\(\"generators/aerialway.py\", doraise=True\\); print\\(\"SYNTAX OK\"\\)')",
+      "Bash(python -c 'import py_compile; [py_compile.compile\\(f, doraise=True\\) for f in [\"generators/aerialway.py\",\"main.py\"]]; print\\(\"SYNTAX OK\"\\)')",
+      "Bash(cat .mcp.json)",
+      "Bash(cat ../.mcp.json)",
+      "Bash(python -c 'import py_compile; py_compile.compile\\(\"generators/powerlines.py\", doraise=True\\); print\\(\"OK\"\\)')",
+      "mcp__blender__execute_blender_code",
+      "mcp__blender__get_viewport_screenshot",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('generators/aerialway.py',encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; [ast.parse\\(open\\(f,encoding='utf-8'\\).read\\(\\)\\) for f in \\('config.py','io/obj_exporter.py'\\)]; print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; [ast.parse\\(open\\(f,encoding='utf-8'\\).read\\(\\)\\) for f in \\('main.py','config.py','blender/panels.py','blender/properties.py','blender/operators.py','blender/batch_processing.py'\\)]; print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; [ast.parse\\(open\\(f,encoding='utf-8'\\).read\\(\\)\\) for f in \\('blender/panels.py','blender/properties.py'\\)]; print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; [ast.parse\\(open\\(f,encoding='utf-8'\\).read\\(\\)\\) for f in \\('blender/batch_processing.py','blender/operators.py'\\)]; print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; [ast.parse\\(open\\(f,encoding='utf-8'\\).read\\(\\)\\) for f in \\('main.py','blender/operators.py'\\)]; print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('blender/operators.py',encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; [ast.parse\\(open\\(f,encoding='utf-8'\\).read\\(\\)\\) for f in \\('blender/transmitters.py','__init__.py','blender/panels.py','blender/batch_processing.py'\\)]; print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('blender/osm_downloader.py',encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; [ast.parse\\(open\\(f,encoding='utf-8'\\).read\\(\\)\\) for f in \\('blender/transmitters.py','blender/osm_downloader.py'\\)]; print\\('OK'\\)\")",
+      "WebFetch(domain:overpass-api.de)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('blender/transmitters.py',encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; [ast.parse\\(open\\(f,encoding='utf-8'\\).read\\(\\)\\) for f in \\('blender/operators.py','blender/transmitters.py'\\)]; print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; [ast.parse\\(open\\(f,encoding='utf-8'\\).read\\(\\)\\) for f in \\('io/osm_parser.py','blender/transmitters.py'\\)]; print\\('OK'\\)\")",
+      "Bash(python -c \"import os; p=r'D:/Condor3BETA/Landscapes/Czech_Republic/Working/Autogen/rivers_036024.json'; os.remove\\(p\\) if os.path.exists\\(p\\) else None; print\\('smazano'\\)\")"
+    ]
+  }
+}
