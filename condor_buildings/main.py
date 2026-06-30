@@ -82,6 +82,8 @@ class PipelineStats:
     powerline_towers: int = 0
     powerline_cables: int = 0
     powerline_lines: int = 0
+    wind_turbines: int = 0
+    aerialways: int = 0  # aerialway pylons merged into 'pylones' (0 = none)
 
 
 @dataclass
@@ -184,6 +186,71 @@ def setup_logging(verbose: bool = False, log_file: Optional[str] = None) -> None
         root_logger.addHandler(file_handler)
 
 
+def _dedupe_reversed_faces(mesh: MeshData) -> None:
+    """
+    Remove reversed-duplicate faces in place, keeping the FIRST occurrence.
+
+    Hipped roofs are generated CCW (normals up) and then duplicated with reversed
+    winding (double_sided_roof). In file mode there is no Blender validate()/recalc
+    to clean that up, so the raw mesh shows both up- and down-facing faces
+    ("weird edges / flipped normals"). Keeping the first occurrence of each
+    vertex-set keeps the original upward faces -> a clean single-sided roof.
+    """
+    seen = set()
+    new_faces = []
+    new_uvs = []
+    has_uv = len(mesh.face_uvs) == len(mesh.faces)
+    for i, face in enumerate(mesh.faces):
+        key = frozenset(face)
+        if key in seen:
+            continue
+        seen.add(key)
+        new_faces.append(face)
+        if has_uv:
+            new_uvs.append(mesh.face_uvs[i])
+    mesh.faces = new_faces
+    if has_uv:
+        mesh.face_uvs = new_uvs
+
+
+def _merge_gabled_for_export(groups: Dict[str, MeshData]) -> Dict[str, MeshData]:
+    # File-mode export: merge the separate pitched-roof groups (gabled LOD0 and
+    # hipped) back into 'houses' so they carry the houses texture. Without this,
+    # 'hipped_roofs' stays a separate object with no material/texture in the
+    # Landscape Editor (file mode has no MTL; the LE assigns by object name).
+    #
+    # File mode skips the Blender import step, so it must reproduce here what
+    # mesh_converter does on import:
+    #   - gabled LOD0: duplicate faces with reversed winding (double-sided),
+    #   - hipped: drop the reversed duplicates, keep the original upward faces.
+    from .generators.roof_gabled import _duplicate_faces_reversed
+
+    gabled = groups.get('gabled_roofs_lod0')
+    hipped = groups.get('hipped_roofs')
+    has_gabled = gabled is not None and not gabled.is_empty()
+    has_hipped = hipped is not None and not hipped.is_empty()
+    if not has_gabled and not has_hipped:
+        return groups
+
+    if has_gabled:
+        # Make the gabled roofs double-sided (visible from below), like import.
+        _duplicate_faces_reversed(gabled, 0, len(gabled.faces), 0)
+    if has_hipped:
+        # Clean hipped roofs to single-sided upward faces, like import.
+        _dedupe_reversed_faces(hipped)
+
+    merged_houses = MeshData()
+    if groups.get('houses') and not groups['houses'].is_empty():
+        merged_houses.merge(groups['houses'])
+    if has_gabled:
+        merged_houses.merge(gabled)
+    if has_hipped:
+        merged_houses.merge(hipped)
+    result = {k: v for k, v in groups.items() if k not in ('gabled_roofs_lod0', 'hipped_roofs', 'houses')}
+    result['houses'] = merged_houses
+    return result
+
+
 def _apply_terrain_orthophoto_uvs(
     groups: Dict[str, MeshData],
     patch_half: float = PATCH_HALF,
@@ -215,7 +282,7 @@ def _apply_terrain_orthophoto_uvs(
     return len(new_uvs)
 
 
-def _generate_powerline_group(osm_path, projector, terrain):
+def _generate_powerline_group(osm_path, projector, terrain, draw_balls=False):
     """
     Build the optional 'pylones' mesh (towers + catenary cables) for a patch.
 
@@ -229,20 +296,117 @@ def _generate_powerline_group(osm_path, projector, terrain):
     Returns (lod0_mesh, lod1_mesh, PowerlineMeshStats), or (None, None, None) when
     the patch has no in-range powerlines (so the caller skips the group).
     """
-    import copy
-    from .io.powerline_parser import parse_powerlines
+    from .io.powerline_parser import parse_powerlines, read_airport_zones
     from .generators.powerlines import generate_powerline_meshes
 
     parse_result = parse_powerlines(osm_path, projector)
     if not parse_result.lines:
         return None, None, None
 
-    mesh_lod0, pl_stats = generate_powerline_meshes(parse_result.lines, terrain)
+    # Airport ball zones: prefer the shared airports.json (3x3 search across
+    # neighbouring patches), else fall back to this patch's own OSM aeroway.
+    airports_json = os.path.join(os.path.dirname(osm_path), "airport", "airports.json")
+    zones = read_airport_zones(airports_json, projector)
+    if not zones:
+        zones = parse_result.airport_zones
+
+    # Single pass: LOD0 (towers + cables + balls) and LOD1 (large+medium pylons
+    # only) are built together - the terrain foot_z per node is computed once.
+    mesh_lod0, mesh_lod1, pl_stats = generate_powerline_meshes(
+        parse_result.lines, terrain,
+        draw_balls=draw_balls, airport_zones=zones,
+    )
     if mesh_lod0.is_empty():
         return None, None, None
-
-    mesh_lod1 = copy.deepcopy(mesh_lod0)
     return mesh_lod0, mesh_lod1, pl_stats
+
+
+def _generate_aerialway_group(osm_path, projector, terrain,
+                              heightmaps_dir=None, patch_id=None,
+                              translate_x=0.0, translate_y=0.0):
+    """
+    Build the aerialway mesh (cable cars / chair lifts) for a patch from OSM
+    aerialway=* ways: a pylon at every support + a straight cable, as a single
+    'aerialway' object (Pylons.dds). Same geometry for LOD0 and LOD1 for now.
+
+    Border pylons (just outside the patch) take their foot height from the
+    ADJACENT patch's terrain (NeighborTerrain), so they line up with that patch.
+
+    Returns (lod0_mesh, lod1_mesh, stats), or (None, None, None) when the patch
+    has no aerialways.
+    """
+    from .io.aerialway_parser import parse_aerialways
+    from .generators.aerialway import (
+        generate_aerialway_meshes, load_aerialway_templates, NeighborTerrain,
+    )
+
+    parse_result = parse_aerialways(osm_path, projector)
+    if not parse_result.lines:
+        return None, None, None
+
+    neighbor = None
+    if heightmaps_dir and patch_id is not None:
+        neighbor = NeighborTerrain(heightmaps_dir, patch_id, translate_x, translate_y)
+
+    # Load templates once and reuse for both LODs (avoids re-reading the OBJs).
+    templates = load_aerialway_templates()
+
+    mesh, aw_stats = generate_aerialway_meshes(
+        parse_result.lines, terrain, templates=templates, neighbor=neighbor)
+    if mesh.is_empty():
+        return None, None, None
+
+    # LOD1: identical, except the cabin pylon uses its low-poly model (if present).
+    mesh_lod1, _ = generate_aerialway_meshes(
+        parse_result.lines, terrain, templates=templates, neighbor=neighbor, low=True)
+    return mesh, mesh_lod1, aw_stats
+
+
+def _generate_wind_turbines_group(osm_path, projector, terrain, bake_world=False, seed=0):
+    """
+    Build wind turbine meshes for a patch from OSM power=generator nodes.
+
+    Returns (lod0_groups, lod1_groups, count) or (None, None, 0) when no turbines.
+    lod0_groups / lod1_groups are dicts {name: MeshData} ready to update() into
+    the main group dicts.
+
+    bake_world=True (file mode): all turbines are merged into one 'wind_turbine'
+    object with real positions baked into the geometry, rotated by one random
+    yaw shared across the whole patch (deterministic from seed).
+    bake_world=False (Blender import): each turbine stays a separate object with
+    its origin at the base, so it can be rotated individually and merged later.
+    """
+    from .io.powerline_parser import parse_powerlines
+    from .generators.powerlines import generate_wind_turbines_mesh
+
+    parse_result = parse_powerlines(osm_path, projector)
+    if not parse_result.turbines:
+        return None, None, 0
+
+    yaw = 0.0
+    if bake_world:
+        import random
+        import math as _math
+        yaw = random.Random(seed).uniform(0.0, 2.0 * _math.pi)
+
+    # Single pass: LOD0 (detailed model) and LOD1 (low model) at once. The
+    # placement (foot_z, yaw, random blade spin) is computed once per turbine and
+    # stamped into both LODs, so the terrain lookups aren't repeated.
+    meshes0, meshes1, count = generate_wind_turbines_mesh(
+        parse_result.turbines, terrain, bake_world=bake_world, yaw=yaw, seed=seed
+    )
+    if not meshes0:
+        return None, None, 0
+
+    groups0 = {}
+    groups1 = {}
+    for i, mesh in enumerate(meshes0):
+        key = f"wind_turbine_{i}" if i > 0 else "wind_turbine"
+        groups0[key] = mesh
+    for i, mesh in enumerate(meshes1):
+        key = f"wind_turbine_{i}" if i > 0 else "wind_turbine"
+        groups1[key] = mesh
+    return groups0, groups1, count
 
 
 def run_pipeline(
@@ -457,8 +621,8 @@ def run_pipeline(
 
     # Create mesh groupers for LOD0 and LOD1
     # Groups: houses, apartment_walls, commercial_walls, industrial_walls, flat_roof_1..6
-    grouper_lod0 = MeshGrouper(num_flat_roof_groups=6, flat_roof_merge=config.flat_roof_merge)
-    grouper_lod1 = MeshGrouper(num_flat_roof_groups=6, flat_roof_merge=config.flat_roof_merge)
+    grouper_lod0 = MeshGrouper(num_flat_roof_groups=6, flat_roof_merge=config.flat_roof_merge, is_lod0=True, flat_roof_industrial_only=config.flat_roof_industrial_only)
+    grouper_lod1 = MeshGrouper(num_flat_roof_groups=6, flat_roof_merge=config.flat_roof_merge, flat_roof_industrial_only=config.flat_roof_industrial_only)
 
     fallback_reasons: Dict[str, int] = {}
     vertex_count_stats: Dict[str, int] = {
@@ -602,7 +766,10 @@ def run_pipeline(
     # Fully guarded — a powerline failure must never break the building output.
     if config.generate_powerlines:
         try:
-            pl0, pl1, pl_stats = _generate_powerline_group(osm_path, projector, terrain)
+            pl0, pl1, pl_stats = _generate_powerline_group(
+                osm_path, projector, terrain,
+                draw_balls=config.generate_warning_balls,
+            )
             if pl0 is not None:
                 lod0_groups['pylones'] = pl0
                 lod1_groups['pylones'] = pl1
@@ -611,13 +778,61 @@ def run_pipeline(
                 stats.powerline_lines = pl_stats.lines_with_geometry
                 logger.info(
                     f"Powerlines: {pl_stats.towers} towers, {pl_stats.cables} "
-                    f"cable spans across {pl_stats.lines_with_geometry} lines"
+                    f"cable spans, {pl_stats.balls} warning balls across "
+                    f"{pl_stats.lines_with_geometry} lines"
                 )
             else:
                 logger.info("Powerlines enabled but no in-range lines in this patch")
         except Exception as e:
             stats.warnings.append(f"Powerline generation failed: {e}")
             logger.warning(f"Powerline generation failed: {e}")
+
+    if config.generate_powerlines:
+        try:
+            wt0, wt1, wt_count = _generate_wind_turbines_group(
+                osm_path, projector, terrain,
+                bake_world=(output_mode == "file"),
+                seed=config.global_seed,
+            )
+            if wt0 is not None:
+                lod0_groups.update(wt0)
+                lod1_groups.update(wt1)
+                stats.wind_turbines = wt_count
+                logger.info(f"Wind turbines: {wt_count} generated")
+        except Exception as e:
+            stats.warnings.append(f"Wind turbine generation failed: {e}")
+            logger.warning(f"Wind turbine generation failed: {e}")
+
+    # Optional aerialways (cable cars / chair lifts) generated together with the
+    # power lines and MERGED into the same 'pylones' object (shared Pylons.dds
+    # material). Same geometry for LOD0 and LOD1 for now. Guarded.
+    if config.generate_powerlines:
+        try:
+            aw0, aw1, aw_stats = _generate_aerialway_group(
+                osm_path, projector, terrain,
+                heightmaps_dir=config.patch_dir, patch_id=config.patch_id,
+                translate_x=config.translate_x, translate_y=config.translate_y,
+            )
+            if aw0 is not None:
+                if 'pylones' in lod0_groups:
+                    lod0_groups['pylones'].merge(aw0)
+                else:
+                    lod0_groups['pylones'] = aw0
+                if 'pylones' in lod1_groups:
+                    lod1_groups['pylones'].merge(aw1)
+                else:
+                    lod1_groups['pylones'] = aw1
+                stats.aerialways = aw_stats['pylons']
+                logger.info(
+                    f"Aerialways: {aw_stats['pylons']} pylons, "
+                    f"{aw_stats['cables']} cables, {aw_stats['carriers']} carriers "
+                    f"across {aw_stats['lines']} lines"
+                )
+            else:
+                logger.info("Aerialways enabled but no in-range lines in this patch")
+        except Exception as e:
+            stats.warnings.append(f"Aerialway generation failed: {e}")
+            logger.warning(f"Aerialway generation failed: {e}")
 
     # Count vertices before optimization
     for name, mesh in lod0_groups.items():
@@ -694,7 +909,7 @@ def run_pipeline(
             # convention (Wiek/Uros, 2026-06-09).
             result_lod0_path = os.path.join(config.output_dir, f"o{config.patch_id}.obj")
             export_mesh_groups(
-                lod0_groups,
+                _merge_gabled_for_export(lod0_groups),
                 result_lod0_path,
                 comment=f"LOD0 - Patch {config.patch_id}"
             )
@@ -717,7 +932,7 @@ def run_pipeline(
         try:
             result_lod1_path = os.path.join(config.output_dir, f"o{config.patch_id}_LOD1.obj")
             export_mesh_groups(
-                lod1_groups,
+                _merge_gabled_for_export(lod1_groups),
                 result_lod1_path,
                 comment=f"LOD1 - Patch {config.patch_id}"
             )
@@ -969,6 +1184,14 @@ def main():
     )
 
     parser.add_argument(
+        '--warning-balls',
+        action='store_true',
+        help='Add aviation warning balls on the top conductor near aerodromes '
+             '(<=5 km) and over deep valleys (cable >45 m above terrain). '
+             'Needs --powerlines'
+    )
+
+    parser.add_argument(
         '--version',
         action='version',
         version=f'%(prog)s {__version__}'
@@ -1014,6 +1237,7 @@ def main():
         flat_roof_merge=args.flat_roof_merge,
         flat_roof_terrain_photo=args.flat_roof_terrain_photo,
         generate_powerlines=args.powerlines,
+        generate_warning_balls=args.warning_balls,
     )
 
     try:
@@ -1049,6 +1273,7 @@ def main():
                 print(f"  Towers: {report.stats.powerline_towers}")
                 print(f"  Cable spans: {report.stats.powerline_cables}")
                 print(f"  Lines with geometry: {report.stats.powerline_lines}")
+                print(f"  Wind turbines: {report.stats.wind_turbines}")
 
             if report.fallback_reasons:
                 print(f"\nFallback reasons:")

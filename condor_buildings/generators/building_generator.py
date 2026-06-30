@@ -768,7 +768,8 @@ def _generate_roof(
                 # generated as pentagonal walls in walls.py (Geometry v4)
                 config = GabledRoofConfig(
                     overhang=overhang,
-                    include_gable_walls=False
+                    include_gable_walls=False,
+                    double_sided_roof=False
                 )
                 result.fallback_reason = RoofFallbackReason.NONE
                 return generate_gabled_roof(building, config), RoofType.GABLED

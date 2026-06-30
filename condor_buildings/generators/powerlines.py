@@ -48,6 +48,7 @@ from ..models.mesh import MeshData
 from ..models.geometry import Point2D, BBox
 from ..models.terrain import TerrainMesh
 from ..config import PATCH_HALF
+from ..io.powerline_parser import _parse_voltage_kv
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,24 @@ PYLON_FILES = {
     "Pylon_Large": "pylon_large.obj",
     "Pylon_Medium": "pylon_medium.obj",
     "Pylon_Small": "pylon_small.obj",
+    # Wind turbine split into a static tower+nacelle and a rotor (blades) so the
+    # blades can be spun to a random angle per turbine; merged back into one object.
+    "Wind_Turbine_Tower": "turbine_tower.obj",
+    "Wind_Turbine_Tower_Low": "turbine_tower_low.obj",
+    "Wind_Turbine_Blades": "turbine_blades.obj",
+    "Wind_Turbine_Blades_Low": "turbine_blades_low.obj",
 }
+
+# Optional low-poly pylon variants for LOD1. Loaded only if the file exists, so a
+# missing one (e.g. no medium yet) just falls back to the full model.
+OPTIONAL_PYLON_FILES = {
+    "Pylon_Large_Low": "pylon_large_low.obj",
+    "Pylon_Medium_Low": "pylon_medium_low.obj",
+}
+
+# Rotor hub in the turbine template frame: the blades spin around the Y axis
+# passing through this point (disc lies in the XZ plane). Measured from the model.
+WT_BLADE_HUB = (0.0, 5.84, 84.23)
 
 # Conductor attachment points in pylon-LOCAL coordinates (upright, foot at origin):
 #   x = position along the crossarm, y ~ 0, z = height of the insulator bottom.
@@ -96,11 +114,11 @@ CABLE_RADIUS = 0.05
 # Constant sag per pylon tier (Wiek: 8 m large / 4 m medium / 2 m small). NOT
 # span-based — a fixed droop per tower type, matching his original tool.
 SAG_BY_TYPE = {
-    "Pylon_Large": 8.0,
-    "Pylon_Medium": 4.0,
-    "Pylon_Small": 2.0,
+    "Pylon_Large": 5.0,
+    "Pylon_Medium": 2.5,
+    "Pylon_Small": 1.2,
 }
-DEFAULT_SAG = 4.0
+DEFAULT_SAG = 2.5
 
 # Adaptive cable sectioning (Wiek's vertex-budget request): pick *just enough*
 # segments so the straight-segment polyline never deviates more than
@@ -108,9 +126,9 @@ DEFAULT_SAG = 4.0
 # equal segments has max deviation s/N^2, so N = ceil(sqrt(s / tol)), clamped.
 # Short/near-straight spans get 1-2 cuts; only long deep-sag spans approach the
 # cap. Was a fixed 8 cuts per span regardless of length (wasteful on short spans).
-CABLE_SMOOTH_TOL = 0.30
-CABLE_MIN_SAMPLES = 1
-CABLE_MAX_SAMPLES = 10
+CABLE_SMOOTH_TOL = 0.15
+CABLE_MIN_SAMPLES = 2
+CABLE_MAX_SAMPLES = 14
 
 # Cable UVs: a tiny *non-degenerate* patch inside the uniform grey corner of
 # Pylons.dds. Wiek maps cables to "(0,0)" (the bottom-left grey), but mapping all
@@ -124,6 +142,22 @@ CABLE_UV_SPREAD = 0.012
 
 # Place a tower a tiny bit into the ground so feet don't float on slopes.
 TOWER_SINK = 0.3
+
+# --- Aviation warning balls (on the TOP conductor) ---
+# Ball model (origin = centre). Diameter + cable spacing per case:
+#   airport, < 69 kV  -> 60 cm / 40 m
+#   airport, >= 69 kV -> 60 cm / 30 m   (denser on the big transmission lines)
+#   deep valley (any) -> 120 cm / 60 m
+WARNING_BALL_FILE = "WarningSphere.obj"
+BALL_AIRPORT_DIAMETER = 0.6
+BALL_AIRPORT_SPACING_LV = 40.0   # airport, line < 69 kV
+BALL_AIRPORT_SPACING_HV = 30.0   # airport, line >= 69 kV
+BALL_VALLEY_DIAMETER = 1.2
+BALL_VALLEY_SPACING = 60.0
+# Top cable higher than this above the terrain below it -> deep-valley balls.
+VALLEY_CLEARANCE = 45.0
+# Voltage split for the airport spacing (kV).
+HV_THRESHOLD_KV = 69.0
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +242,13 @@ def load_pylon_templates(assets_dir: Optional[str] = None) -> Dict[str, PylonTem
             "Loaded %s: %d verts, %.1f m tall",
             pylon_type, len(templates[pylon_type].verts), templates[pylon_type].height,
         )
+    # Optional low-poly pylon variants (LOD1): load only if present.
+    for pylon_type, filename in OPTIONAL_PYLON_FILES.items():
+        path = os.path.join(base, filename)
+        if os.path.exists(path):
+            templates[pylon_type] = _load_obj_template(path)
+            logger.debug("Loaded optional %s (%d verts)", pylon_type,
+                         len(templates[pylon_type].verts))
     return templates
 
 
@@ -399,6 +440,112 @@ def _add_cable(
 
 
 # ---------------------------------------------------------------------------
+# Warning balls (on the top conductor)
+# ---------------------------------------------------------------------------
+
+def _top_attach(attach_local):
+    """
+    The single highest conductor attach point (ties -> the one nearest the tower
+    centre). So warning balls land on ONE top cable even when several conductors
+    share the top height. Returns (x, y, z) local, or None.
+    """
+    if not attach_local:
+        return None
+    zmax = max(a[2] for a in attach_local)
+    tops = [a for a in attach_local if abs(a[2] - zmax) < 1e-6]
+    return min(tops, key=lambda a: abs(a[0]))
+
+
+def _place_ball(mesh: MeshData, tmpl: PylonTemplate,
+                x: float, y: float, z: float, scale: float) -> None:
+    """Stamp a uniformly-scaled ball template centred at (x, y, z)."""
+    v_base = mesh.vertex_count()
+    uv_base = mesh.uv_count()
+    for vx, vy, vz in tmpl.verts:
+        mesh.add_vertex(vx * scale + x, vy * scale + y, vz * scale + z)
+    for u, v in tmpl.uvs:
+        mesh.add_uv(u, v)
+    for face in tmpl.faces:
+        vidx = [v_base + vi + 1 for vi, _ in face]
+        uvidx = [uv_base + (ti if ti >= 0 else 0) + 1 for _, ti in face]
+        mesh.add_polygon_with_uvs(vidx, uvidx)
+
+
+def _place_balls_on_cable(mesh, ball_tmpl, scale, pa, pb, sag, spacing) -> int:
+    """
+    Distribute balls along the catenary top cable pa->pb at ~`spacing` metres,
+    evenly spread (none sitting on the pylons). Returns the number placed.
+    """
+    dx, dy = pb[0] - pa[0], pb[1] - pa[1]
+    span = math.hypot(dx, dy)
+    if span < 1e-6:
+        return 0
+
+    # The cable is DRAWN as a polyline (straight chords between `ns` sample points
+    # on the parabola). The smooth parabola dips BELOW those chords, so a ball put
+    # on the parabola hangs under the drawn wire. Put the ball on the SAME chord
+    # the cable renders, so it sits exactly on the wire.
+    ns = _cable_sections(sag)
+
+    def _parab(tt):
+        return pa[2] + (pb[2] - pa[2]) * tt - 4.0 * sag * tt * (1.0 - tt)
+
+    def cable_z(t):
+        seg = min(int(t * ns), ns - 1)
+        t0, t1 = seg / ns, (seg + 1) / ns
+        z0, z1 = _parab(t0), _parab(t1)
+        f = (t - t0) / (t1 - t0) if t1 > t0 else 0.0
+        return z0 + (z1 - z0) * f
+
+    n_balls = max(1, int(round(span / spacing)))
+    for k in range(n_balls):
+        t = (k + 0.5) / n_balls
+        cx = pa[0] + dx * t
+        cy = pa[1] + dy * t
+        _place_ball(mesh, ball_tmpl, cx, cy, cable_z(t), scale)
+    return n_balls
+
+
+def _line_is_hv(line):
+    """
+    >= 69 kV? Uses the real ``voltage`` tag; if it's missing, treats the big
+    transmission towers (Pylon_Large) as HV and everything else as < 69 kV.
+    """
+    kv = _parse_voltage_kv(line.voltage)
+    if kv is not None:
+        return kv >= HV_THRESHOLD_KV
+    return line.pylon_type == "Pylon_Large"
+
+
+def _ball_mode_for_span(pa, pb, sag, terrain, airport_zones, is_hv):
+    """
+    Decide whether (and how) a span's top cable gets balls. Returns
+    (diameter, spacing) or None.
+      * deep valley (top cable > VALLEY_CLEARANCE above terrain) -> 120 cm / 60 m (any line)
+      * inside an airport zone -> 60 cm, 30 m if line >= 69 kV else 40 m
+    """
+    # Valley check first (sample a few points of the catenary vs the terrain below).
+    max_clear = 0.0
+    for t in (0.25, 0.5, 0.75):
+        cx = pa[0] + (pb[0] - pa[0]) * t
+        cy = pa[1] + (pb[1] - pa[1]) * t
+        cz = pa[2] + (pb[2] - pa[2]) * t - 4.0 * sag * t * (1.0 - t)
+        tz = _terrain_z(terrain, cx, cy)
+        if tz is not None:
+            max_clear = max(max_clear, cz - tz)
+    if max_clear > VALLEY_CLEARANCE:
+        return (BALL_VALLEY_DIAMETER, BALL_VALLEY_SPACING)
+
+    # Airport zone check (span midpoint inside a runway zone).
+    mx, my = (pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0
+    for (zx, zy, zr) in airport_zones:
+        if math.hypot(mx - zx, my - zy) <= zr:
+            spacing = BALL_AIRPORT_SPACING_HV if is_hv else BALL_AIRPORT_SPACING_LV
+            return (BALL_AIRPORT_DIAMETER, spacing)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -407,6 +554,8 @@ class PowerlineMeshStats:
     towers: int = 0
     cables: int = 0
     lines_with_geometry: int = 0
+    turbines: int = 0
+    balls: int = 0
 
 
 def generate_powerline_meshes(
@@ -415,7 +564,9 @@ def generate_powerline_meshes(
     templates: Optional[Dict[str, PylonTemplate]] = None,
     patch_half: float = PATCH_HALF,
     draw_cables: bool = True,
-) -> Tuple[MeshData, PowerlineMeshStats]:
+    draw_balls: bool = False,
+    airport_zones=None,
+) -> Tuple[MeshData, MeshData, PowerlineMeshStats]:
     """
     Build the single ``pylones`` mesh (towers + cables) for a list of PowerLines.
 
@@ -437,8 +588,35 @@ def generate_powerline_meshes(
     if templates is None:
         templates = load_pylon_templates()
 
-    mesh = MeshData(osm_id=PYLON_MATERIAL)
+    mesh = MeshData(osm_id=PYLON_MATERIAL)    # LOD0: all towers + cables + balls
+    mesh1 = MeshData(osm_id=PYLON_MATERIAL)   # LOD1: large+medium pylons only
     stats = PowerlineMeshStats()
+
+    # Warning-ball template (loaded only when requested; never breaks powerlines).
+    ball_tmpl = None
+    ball_native_d = 1.0
+    airport_zones = airport_zones or []
+    if draw_balls:
+        try:
+            ball_tmpl = _load_obj_template(
+                os.path.join(_default_assets_dir(), WARNING_BALL_FILE)
+            )
+            xs = [v[0] for v in ball_tmpl.verts]
+            ys = [v[1] for v in ball_tmpl.verts]
+            zs = [v[2] for v in ball_tmpl.verts]
+            # Re-centre the ball on its own bounding box, so wherever the model's
+            # origin sits, the ball's CENTRE lands exactly on the cable (otherwise
+            # an off-centre origin makes the ball hang above/below the wire).
+            cx0 = (min(xs) + max(xs)) / 2.0
+            cy0 = (min(ys) + max(ys)) / 2.0
+            cz0 = (min(zs) + max(zs)) / 2.0
+            ball_tmpl.verts = [(vx - cx0, vy - cy0, vz - cz0)
+                               for (vx, vy, vz) in ball_tmpl.verts]
+            ball_native_d = max(max(xs) - min(xs), max(ys) - min(ys),
+                                max(zs) - min(zs)) or 1.0
+        except Exception as e:
+            logger.warning("Warning balls: could not load %s: %s", WARNING_BALL_FILE, e)
+            ball_tmpl = None
 
     for line in lines:
         pts = line.points
@@ -464,6 +642,10 @@ def generate_powerline_meshes(
 
         xy = [(p.x, p.y) for p in pts]
         attach_local = CONDUCTOR_ATTACH.get(line.pylon_type, [])
+        # LOD1 gets only large/medium pylons (no small, no cables, no balls), and
+        # uses the low-poly variant if one exists (e.g. pylon_large_low.obj).
+        is_small = (line.pylon_type == "Pylon_Small")
+        tmpl1 = templates.get(line.pylon_type + "_Low", tmpl)
 
         # World transform per node (only computed for placed nodes).
         node_world: Dict[int, Tuple[float, float, float, float]] = {}  # j -> (x,y,foot_z,yaw)
@@ -475,6 +657,8 @@ def generate_powerline_meshes(
             yaw = _yaw_at(xy, j)
             node_world[j] = (x, y, foot_z, yaw)
             _place_pylon(mesh, tmpl, x, y, foot_z, yaw)
+            if not is_small:
+                _place_pylon(mesh1, tmpl1, x, y, foot_z, yaw)
             stats.towers += 1
 
         had_geometry = bool(node_world)
@@ -496,15 +680,123 @@ def generate_powerline_meshes(
                     _add_cable(mesh, pa, pb, sag)
                     stats.cables += 1
 
+        # Warning balls on the TOP conductor (per span; merged into the same mesh).
+        if draw_balls and ball_tmpl is not None:
+            top = _top_attach(attach_local)
+            if top is not None:
+                is_hv = _line_is_hv(line)
+                tsag = SAG_BY_TYPE.get(line.pylon_type, DEFAULT_SAG)
+                tax, tay, taz = top
+                for j in range(n - 1):
+                    if j not in node_world or (j + 1) not in node_world:
+                        continue
+                    xa, ya, za, yawa = node_world[j]
+                    xb, yb, zb, yawb = node_world[j + 1]
+                    ca, sa = math.cos(yawa), math.sin(yawa)
+                    cb, sb = math.cos(yawb), math.sin(yawb)
+                    rax, ray = _rotz(tax, tay, ca, sa)
+                    rbx, rby = _rotz(tax, tay, cb, sb)
+                    bpa = (rax + xa, ray + ya, taz + za)
+                    bpb = (rbx + xb, rby + yb, taz + zb)
+                    mode = _ball_mode_for_span(bpa, bpb, tsag, terrain,
+                                               airport_zones, is_hv)
+                    if mode is None:
+                        continue
+                    diameter, spacing = mode
+                    stats.balls += _place_balls_on_cable(
+                        mesh, ball_tmpl, diameter / ball_native_d,
+                        bpa, bpb, tsag, spacing,
+                    )
+
         if had_geometry:
             stats.lines_with_geometry += 1
 
     logger.info(
-        "Powerline mesh: %d towers, %d cable spans across %d lines (%d verts, %d faces)",
-        stats.towers, stats.cables, stats.lines_with_geometry,
+        "Powerline mesh: %d towers, %d cable spans, %d warning balls across %d "
+        "lines (%d verts, %d faces)",
+        stats.towers, stats.cables, stats.balls, stats.lines_with_geometry,
         mesh.vertex_count(), mesh.face_count(),
     )
-    return mesh, stats
+    return mesh, mesh1, stats
+
+
+def _spin_blades(tmpl: PylonTemplate, theta: float) -> PylonTemplate:
+    """Return a copy of the rotor template spun around the Y axis through
+    WT_BLADE_HUB by ``theta`` (the disc lies in the XZ plane; Y is unchanged)."""
+    hx, hy, hz = WT_BLADE_HUB
+    c, s = math.cos(theta), math.sin(theta)
+    verts = []
+    for (x, y, z) in tmpl.verts:
+        dx, dz = x - hx, z - hz
+        verts.append((hx + dx * c + dz * s, y, hz - dx * s + dz * c))
+    return PylonTemplate(name=tmpl.name, verts=verts, uvs=tmpl.uvs, faces=tmpl.faces)
+
+
+def generate_wind_turbines_mesh(
+    turbines,
+    terrain: TerrainMesh,
+    templates: Optional[Dict[str, PylonTemplate]] = None,
+    bake_world: bool = False,
+    yaw: float = 0.0,
+    seed: int = 0,
+) -> Tuple[List[MeshData], List[MeshData], int]:
+    """Build wind turbines for BOTH LODs in a single pass: the placement
+    (foot_z, yaw, blade spin) is computed once per turbine and stamped with the
+    detailed model (LOD0) and the low model (LOD1). Towers/nacelles share the
+    patch yaw; each rotor is spun to its own random angle around the hub (same
+    angle in both LODs). Returns (lod0_meshes, lod1_meshes, count)."""
+    import random
+    if templates is None:
+        templates = load_pylon_templates()
+    tower0 = templates.get("Wind_Turbine_Tower")
+    blades0 = templates.get("Wind_Turbine_Blades")
+    tower1 = templates.get("Wind_Turbine_Tower_Low")
+    blades1 = templates.get("Wind_Turbine_Blades_Low")
+    if None in (tower0, blades0, tower1, blades1):
+        logger.warning("Sablona pro vetrnou elektrarnu nebyla nalezena.")
+        return [], [], 0
+
+    rng = random.Random(seed)
+
+    if bake_world:
+        # File mode: bake every turbine into ONE merged mesh per LOD, at its world
+        # position (x,y from OSM, z from terrain).
+        merged0 = MeshData(osm_id="wind_turbine")
+        merged1 = MeshData(osm_id="wind_turbine")
+        count = 0
+        for t in turbines:
+            spin = rng.uniform(0.0, 2.0 * math.pi)
+            if not t.in_patch:
+                continue
+            foot_z = _foot_z(terrain, t.x, t.y)
+            _place_pylon(merged0, tower0, t.x, t.y, foot_z, yaw)
+            _place_pylon(merged0, _spin_blades(blades0, spin), t.x, t.y, foot_z, yaw)
+            _place_pylon(merged1, tower1, t.x, t.y, foot_z, yaw)
+            _place_pylon(merged1, _spin_blades(blades1, spin), t.x, t.y, foot_z, yaw)
+            count += 1
+        if count == 0:
+            return [], [], 0
+        logger.info("Vygenerovano %d vetrnych elektraren (slouceno, zapeceno).", count)
+        return [merged0], [merged1], count
+
+    meshes0 = []
+    meshes1 = []
+    for t in turbines:
+        spin = rng.uniform(0.0, 2.0 * math.pi)
+        if not t.in_patch:
+            continue
+        idx = len(meshes0)
+        foot_z = _foot_z(terrain, t.x, t.y)
+        m0 = MeshData(osm_id=f"wind_turbine_{idx}", origin=(t.x, t.y, foot_z))
+        _place_pylon(m0, tower0, 0.0, 0.0, 0.0, 0.0)
+        _place_pylon(m0, _spin_blades(blades0, spin), 0.0, 0.0, 0.0, 0.0)
+        m1 = MeshData(osm_id=f"wind_turbine_{idx}", origin=(t.x, t.y, foot_z))
+        _place_pylon(m1, tower1, 0.0, 0.0, 0.0, 0.0)
+        _place_pylon(m1, _spin_blades(blades1, spin), 0.0, 0.0, 0.0, 0.0)
+        meshes0.append(m0)
+        meshes1.append(m1)
+    logger.info("Vygenerovano %d vetrnych elektraren.", len(meshes0))
+    return meshes0, meshes1, len(meshes0)
 
 
 # ---------------------------------------------------------------------------
@@ -542,7 +834,7 @@ def _main() -> None:
 
     terrain = load_terrain(os.path.join(args.patch_dir, f"h{args.patch_id}.obj"))
 
-    mesh, stats = generate_powerline_meshes(
+    mesh, _mesh_lod1, stats = generate_powerline_meshes(
         result.lines, terrain, draw_cables=not args.no_cables
     )
     opt = mesh.optimize()

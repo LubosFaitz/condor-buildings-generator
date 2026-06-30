@@ -11,6 +11,7 @@ Updated for Condor workflow:
 """
 
 import bpy
+import math
 from bpy.props import (
     StringProperty,
     EnumProperty,
@@ -20,6 +21,31 @@ from bpy.props import (
 )
 from bpy.types import PropertyGroup
 import os
+
+_turbine_slider_pos = 0.0
+_turbine_active_name = ""
+
+
+def _get_wind_turbine_rotation(self):
+    global _turbine_slider_pos, _turbine_active_name
+    active = bpy.context.active_object
+    active_name = active.name if active else ""
+    if active_name != _turbine_active_name:
+        _turbine_active_name = active_name
+        if active and (active.name == 'wind_turbine' or active.name.startswith('wind_turbine_')):
+            _turbine_slider_pos = math.degrees(active.rotation_euler.z) % 360
+        else:
+            _turbine_slider_pos = 0.0
+    return _turbine_slider_pos
+
+
+def _set_wind_turbine_rotation(self, value):
+    global _turbine_slider_pos
+    delta = math.radians(value - _turbine_slider_pos)
+    _turbine_slider_pos = value
+    for obj in bpy.context.selected_objects:
+        if obj.name == 'wind_turbine' or obj.name.startswith('wind_turbine_'):
+            obj.rotation_euler.z += delta
 
 
 def get_landscapes(self, context):
@@ -115,11 +141,23 @@ class CondorBuildingsProperties(PropertyGroup):
         default=False,
     )
 
+    import_patch_terrain: BoolProperty(
+        name="terrain",
+        description="Import terrain for each patch",
+        default=False,
+    )
+
     patch_id: StringProperty(
         name="Patch ID",
         description="6-digit patch identifier (e.g., 036019) for single patch mode",
         default="",
         maxlen=6,
+    )
+
+    patch_tref: BoolProperty(
+        name="tr3f",
+        description="tr3f",
+        default=False,
     )
 
     # --- OSM Data Source ---
@@ -199,14 +237,113 @@ class CondorBuildingsProperties(PropertyGroup):
         default=False,
     )
 
+    flat_roof_industrial_only: BoolProperty(
+        name="Only industrial",
+        description=(
+            "Apply terrain photo only to industrial flat roofs (merged into flat_roof). "
+            "Other flat roofs keep their normal Roof1..6 textures. "
+            "Only available when Terrain photo is enabled"
+        ),
+        default=False,
+    )
+
     # --- Powerlines ---
 
     generate_powerlines: BoolProperty(
         name="Generate Powerlines",
         description=(
-            "Also generate powerlines from OSM power=line / minor_line ways: a pylon "
-            "at every node + catenary cables, as a single 'pylones' object sharing the "
-            "buildings' OBJ/MTL/C3D (texture Pylons.dds). Off by default"
+            "If present in the OSM data for the patch, also generate powerlines "
+            "(power=line / minor_line), wind turbines and aerialways (cable cars / "
+            "chair lifts): pylons + catenary cables + lift cabins/seats, merged into "
+            "a single 'pylones' object sharing the buildings' OBJ/MTL/C3D (texture "
+            "Pylons.dds). Off by default"
+        ),
+        default=False,
+    )
+
+    randomize_wind_turbines: BoolProperty(
+        name="Randomized wind turbine",
+        description=(
+            "File mode (Import to Blender off): rotate EACH wind turbine tower by "
+            "its own random Z angle instead of one shared angle for the whole patch. "
+            "Off by default (all towers share one random angle)"
+        ),
+        default=False,
+    )
+
+    warning_balls: BoolProperty(
+        name="Warning balls",
+        description=(
+            "Add aviation warning balls on the top conductor of power lines "
+            "(merged into the 'pylones' object, shares Pylons.dds). Placed inside "
+            "airport zones (runway centre + half its length + 458 m -> 60 cm) and "
+            "over deep valleys (cable >45 m above terrain -> 120 cm), 40 m apart. "
+            "Checkbox is hidden but kept ON, so balls are always added when "
+            "Generate Powerlines is on"
+        ),
+        default=True,
+    )
+
+    add_mtl: BoolProperty(
+        name="add mtl batch",
+        description=(
+            "File mode (Import to Blender off): also write an .mtl next to each "
+            "exported o<patch>.obj, with the same materials and textures as the "
+            "Export OBJ+MTL button (textures from the config texture map). "
+            "Checkbox is hidden in the panel, but kept ON by default so the MTL "
+            "is always written"
+        ),
+        default=True,
+    )
+
+    batch_processing: BoolProperty(
+        name="Batch processing",
+        description=(
+            "Process a whole patch range one patch at a time and export each as "
+            "Condor-ready OBJ+MTL automatically. Only active together with Import "
+            "to Blender: for every patch it generates buildings (no terrain), "
+            "rotates wind turbines by one random angle, merges them, exports "
+            "(splitting large objects when Separate is on) and then deletes the "
+            "patch from Blender before the next one - keeping memory low. Off by "
+            "default; with it off Generate Buildings behaves as before"
+        ),
+        default=False,
+    )
+
+    show_other_objects: BoolProperty(
+        name="Other objects",
+        description="Expand the 'Other objects' section (chimneys, ...)",
+        default=False,
+    )
+
+    chimney_batch: BoolProperty(
+        name="Batch",
+        description=(
+            "File mode (Import to Blender off): after generating the OBJ, also "
+            "generate the chimneys (like the Import button), merge them into one "
+            "'chimney' object at origin 0,0,0 and add it into the OBJ. If 'add mtl "
+            "batch' is on, the chimney material + Chimney.dds texture are written "
+            "into the MTL too. Off by default"
+        ),
+        default=False,
+    )
+
+    wind_turbine_rotation: FloatProperty(
+        name="Wind Turbine Rotation",
+        description="Rotation of selected wind turbines around the Z axis (degrees)",
+        default=0.0,
+        min=0.0,
+        max=360.0,
+        precision=1,
+        get=_get_wind_turbine_rotation,
+        set=_set_wind_turbine_rotation,
+    )
+
+    use_msprint: BoolProperty(
+        name="MSprint - add buildings",
+        description=(
+            "After downloading OSM, adds missing buildings from Microsoft Global Building Footprints. "
+            "Gz files are cached (downloaded only once); result is merged into map_*.osm"
         ),
         default=False,
     )

@@ -418,48 +418,36 @@ def compute_multi_floor_wall_uvs(
     wall_width_m: float,
     building_floors: int,
     facade_index: int,
-    is_gable_end: bool = False
+    is_gable_end: bool = False,
+    v_scale: float = 1.0,
 ) -> List[List[Tuple[float, float]]]:
     """
     Compute UV coordinates for a multi-floor wall, returning UVs per segment.
 
-    This function handles walls that span multiple floors by returning
-    separate UV sets for each 3m vertical segment.
+    Section assignment per floor:
+    - floor 0: 'ground' (doors + windows)
+    - floor 1: 'upper'  (windows only)
+    - floor 2+: 'gable'  (top section of atlas style)
 
-    For walls that need to be split into multiple quads (one per floor),
-    this provides the UVs for each segment.
+    v_scale: multiplier applied to all V values (use 1/0.75 for Industrial_Atlas
+    which has no roof section and whose facades span the full V 0.0-1.0 range).
 
     Uses U offset (0.33) to skip door section.
-
-    Args:
-        wall_width_m: Wall width in meters
-        building_floors: Number of floors
-        facade_index: Facade style index [0..11]
-        is_gable_end: If True, this is a gable end (no upper floors visible)
-
-    Returns:
-        List of UV lists, one per floor segment:
-        - [0] = ground floor UVs (4 tuples)
-        - [1..n] = upper floor UVs (4 tuples each)
-
-    Note: Current geometry uses single quads per wall, so this is for
-    future use if walls are split per-floor.
     """
     u_start, u_end = compute_wall_u_range(wall_width_m)
     segments = []
 
-    # Ground floor
-    v_min, v_max = get_facade_section_v_range(facade_index, 'ground')
-    segments.append([
-        (u_start, v_min),
-        (u_end, v_min),
-        (u_end, v_max),
-        (u_start, v_max),
-    ])
+    for floor_idx in range(building_floors):
+        if floor_idx == 0:
+            section = 'ground'
+        elif floor_idx == 1:
+            section = 'upper'
+        else:
+            section = 'gable'
 
-    # Upper floors
-    v_min, v_max = get_facade_section_v_range(facade_index, 'upper')
-    for _ in range(1, building_floors):
+        v_min, v_max = get_facade_section_v_range(facade_index, section)
+        v_min *= v_scale
+        v_max *= v_scale
         segments.append([
             (u_start, v_min),
             (u_end, v_min),

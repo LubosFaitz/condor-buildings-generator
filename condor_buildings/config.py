@@ -293,6 +293,16 @@ TEXTURE_MAP = {
     'flat_roof_6': 'Roof6.dds',
     'flat_roof': 'Roof1.dds',  # merged mode, placeholder (overridden by orthophoto)
     'pylones': 'Pylons.dds',   # powerline towers + cables (optional, Wiek's assets)
+    'aerialway': 'Pylons.dds',  # cable cars / chair lifts (same texture as pylons)
+    'wind_turbine': 'WindTurbine.dds',
+    'chimney': 'Chimney.dds',
+}
+
+# Material aliases: a group whose object stays separate in the OBJ but shares
+# another group's material (same newmtl / usemtl / texture). Aerialway pylons use
+# the very same lattice texture as the powerline pylons, so they share one material.
+MATERIAL_ALIAS = {
+    'aerialway': 'pylones',
 }
 
 # =============================================================================
@@ -466,12 +476,20 @@ class PipelineConfig:
     # The photo requires the merged single object, so it implies flat_roof_merge.
     flat_roof_terrain_photo: bool = False
 
+    # Apply terrain photo only to industrial flat roofs; others keep flat_roof_1..6
+    flat_roof_industrial_only: bool = False
+
     # Powerlines (optional, off by default). When True the pipeline parses
     # power=line / minor_line ways from the SAME OSM file, stamps Wiek's pylon
     # assets at every node and strings catenary cables, and injects the result as
     # a single 'pylones' object that rides in the same OBJ/MTL/C3D as the buildings
     # (Wiek Q18). Additive: a powerline failure never blocks the building output.
     generate_powerlines: bool = False
+
+    # Aviation warning balls on the top conductor of power lines (opt-in). Placed
+    # near aerodromes (medium lines, else small/large) and over deep valleys (any
+    # line), merged into the same 'pylones' object. Needs generate_powerlines.
+    generate_warning_balls: bool = False
 
     def __post_init__(self):
         """Validate configuration values."""

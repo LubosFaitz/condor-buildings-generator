@@ -134,6 +134,12 @@ def parse_osm_file(
         if 'building' not in relation.tags:
             continue
 
+        # Skip chimneys (man_made=chimney): some are also tagged building=yes,
+        # which would otherwise produce a tall round flat-roof "cylinder" right
+        # under the chimney model. They are not real buildings.
+        if relation.tags.get('man_made') == 'chimney':
+            continue
+
         stats['building_relations'] += 1
 
         try:
@@ -162,6 +168,12 @@ def parse_osm_file(
 
         # Check if it's a building
         if 'building' not in way.tags:
+            continue
+
+        # Skip chimneys (man_made=chimney): some are also tagged building=yes,
+        # which would otherwise produce a tall round flat-roof "cylinder" right
+        # under the chimney model. They are not real buildings.
+        if way.tags.get('man_made') == 'chimney':
             continue
 
         stats['building_ways'] += 1

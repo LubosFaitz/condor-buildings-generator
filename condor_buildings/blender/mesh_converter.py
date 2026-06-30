@@ -24,7 +24,8 @@ def meshdata_to_blender(
     mesh_data,  # MeshData
     name: str = "building",
     collection: Optional[bpy.types.Collection] = None,
-    use_osm_id: bool = True
+    use_osm_id: bool = True,
+    recalc_normals: bool = False
 ) -> bpy.types.Object:
     """
     Convert a MeshData instance to a Blender mesh object.
@@ -77,10 +78,12 @@ def meshdata_to_blender(
     # guards against any future generator that emits a degenerate face.
     mesh.validate(verbose=False)
 
-    # Make faces render correctly without a manual "Recalculate Outside"
-    # (Shift+N) in Blender (Lubos's report). For flat-roof sheets this forces
-    # +Z (up); for closed building volumes it recalculates outward.
-    _recalc_normals_outside(mesh)
+    # Normals are already corrected per-building in mesh_grouper._fix_normals_outward
+    # before merging, so recalculate_outside is skipped here — it would override
+    # the inner-ring (courtyard) wall normals that intentionally face inward.
+    # For hipped roofs (double_sided_roof=True), caller passes recalc_normals=True.
+    if recalc_normals:
+        _recalc_normals_outside(mesh)
 
     # Update mesh to compute normals, etc.
     mesh.update()
@@ -89,6 +92,9 @@ def meshdata_to_blender(
     if collection is None:
         collection = bpy.context.collection
     collection.objects.link(obj)
+
+    if mesh_data.origin is not None:
+        obj.location = mesh_data.origin
 
     return obj
 
@@ -306,6 +312,10 @@ def _assign_material(
     tmap = texture_map if texture_map is not None else TEXTURE_MAP
     texture_filename = tmap.get(group_name)
     if not texture_filename:
+        import re
+        base = re.sub(r'_\d+$', '', group_name)
+        texture_filename = tmap.get(base)
+    if not texture_filename:
         return
 
     # The merged flat_roof uses a per-patch orthophoto (t<patch>.dds), so key its
@@ -380,6 +390,48 @@ def create_buildings_collection(
     return collection
 
 
+def blender_obj_to_meshdata(obj: bpy.types.Object, osm_id: str = None):
+    """
+    Convert a Blender mesh object back to MeshData.
+
+    Used by the export operator to read objects from the scene collection
+    instead of re-running the pipeline.
+    """
+    try:
+        from ..models.mesh import MeshData
+    except ImportError:
+        return None
+
+    mesh = obj.data
+    md = MeshData(osm_id=osm_id or obj.name)
+
+    for v in mesh.vertices:
+        md.vertices.append((v.co.x, v.co.y, v.co.z))
+
+    uv_layer = mesh.uv_layers.active
+    uv_map = {}
+    if uv_layer:
+        for loop in mesh.loops:
+            uv = uv_layer.data[loop.index].uv
+            key = (round(uv.x, 6), round(uv.y, 6))
+            if key not in uv_map:
+                uv_map[key] = len(md.uvs) + 1
+                md.uvs.append((uv.x, uv.y))
+
+    for poly in mesh.polygons:
+        face = [li + 1 for li in poly.vertices]
+        md.faces.append(face)
+        if uv_layer:
+            face_uv = []
+            for loop_idx in poly.loop_indices:
+                uv = uv_layer.data[loop_idx].uv
+                key = (round(uv.x, 6), round(uv.y, 6))
+                face_uv.append(uv_map[key])
+            md.face_uvs.append(face_uv)
+
+    return md
+
+
 def import_meshes_to_blender(
     meshes: List,  # List[MeshData]
     collection_name: str = "Condor Buildings",
@@ -451,6 +503,36 @@ def cleanup_buildings_collection(name: str = "Condor Buildings") -> int:
     return count
 
 
+def _duplicate_and_flip_mesh(
+    src_obj: bpy.types.Object,
+    name: str,
+    collection: bpy.types.Collection
+) -> bpy.types.Object:
+    mesh_copy = src_obj.data.copy()
+    mesh_copy.flip_normals()
+    flip_obj = bpy.data.objects.new(name, mesh_copy)
+    collection.objects.link(flip_obj)
+    return flip_obj
+
+
+def _join_objects_into(
+    target_obj: bpy.types.Object,
+    source_objs: List[bpy.types.Object]
+) -> None:
+    if target_obj is None:
+        return
+    # Snapshot the list and skip any None/stale entries (can appear right after
+    # a previous join removed objects from the view layer).
+    for obj in list(bpy.context.view_layer.objects):
+        if obj is not None:
+            obj.select_set(False)
+    for obj in [target_obj] + list(source_objs):
+        if obj is not None:
+            obj.select_set(True)
+    bpy.context.view_layer.objects.active = target_obj
+    bpy.ops.object.join()
+
+
 def import_grouped_meshes_to_blender(
     grouped_meshes: Dict,  # Dict[str, MeshData]
     collection_name: str = "Condor Buildings",
@@ -490,9 +572,18 @@ def import_grouped_meshes_to_blender(
 
     search_dirs = [texture_dir] + list(extra_texture_dirs or [])
 
+    # Check for LOD0 gabled roofs that need doubling, and hipped roofs that need recalc
+    gabled_roofs_data = grouped_meshes.get('gabled_roofs_lod0')
+    hipped_roofs_data = grouped_meshes.get('hipped_roofs')
+    houses_obj = None
+
     # Import each group as a named object
     objects = []
     for group_name, mesh_data in grouped_meshes.items():
+        # Handled separately after 'houses' is created
+        if group_name in ('gabled_roofs_lod0', 'hipped_roofs'):
+            continue
+
         # Skip empty meshes
         if mesh_data.is_empty():
             continue
@@ -508,6 +599,48 @@ def import_grouped_meshes_to_blender(
         # Assign material with texture
         _assign_material(obj, group_name, texture_dirs=search_dirs, texture_map=texture_map)
 
+        if group_name == 'houses':
+            houses_obj = obj
+
         objects.append(obj)
+
+    # Double LOD0 gabled roofs: duplicate, flip normals on duplicate, join both into houses.
+    if gabled_roofs_data and not gabled_roofs_data.is_empty():
+        roofs_obj = meshdata_to_blender(
+            gabled_roofs_data,
+            name='gabled_roofs_lod0',
+            collection=collection,
+            use_osm_id=False
+        )
+        _assign_material(roofs_obj, 'houses', texture_dirs=search_dirs, texture_map=texture_map)
+
+        roofs_flip_obj = _duplicate_and_flip_mesh(roofs_obj, 'gabled_roofs_lod0_flip', collection)
+        _assign_material(roofs_flip_obj, 'houses', texture_dirs=search_dirs, texture_map=texture_map)
+
+        if houses_obj is not None:
+            _join_objects_into(houses_obj, [roofs_obj, roofs_flip_obj])
+        else:
+            _join_objects_into(roofs_obj, [roofs_flip_obj])
+            roofs_obj.name = 'houses'
+            houses_obj = roofs_obj
+            objects.append(roofs_obj)
+
+    # Hipped roofs: recalc normals outside (double_sided_roof=True, _fix_normals_outward skipped),
+    # then join into houses.
+    if hipped_roofs_data and not hipped_roofs_data.is_empty():
+        hipped_obj = meshdata_to_blender(
+            hipped_roofs_data,
+            name='hipped_roofs',
+            collection=collection,
+            use_osm_id=False,
+            recalc_normals=True
+        )
+        _assign_material(hipped_obj, 'houses', texture_dirs=search_dirs, texture_map=texture_map)
+
+        if houses_obj is not None:
+            _join_objects_into(houses_obj, [hipped_obj])
+        else:
+            hipped_obj.name = 'houses'
+            objects.append(hipped_obj)
 
     return objects

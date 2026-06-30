@@ -62,6 +62,10 @@ def generate_walls(
     # Get texture variations for this building (deterministic)
     _, facade_index = select_building_variations(building.seed)
 
+    # Industrial_Atlas has no roof section — facades span full V 0.0-1.0
+    # so V values (normally 0.0-0.75) must be scaled up by 1/0.75
+    _INDUSTRIAL_V_SCALE = 1.0 / 0.75
+
     # Generate outer walls
     _generate_ring_walls(
         mesh,
@@ -70,7 +74,8 @@ def generate_walls(
         top_z,
         is_outer=True,
         facade_index=facade_index,
-        building_floors=building.floors
+        building_floors=building.floors,
+        v_scale=_INDUSTRIAL_V_SCALE,
     )
 
     # Generate hole walls (facing inward)
@@ -82,7 +87,8 @@ def generate_walls(
             top_z,
             is_outer=False,
             facade_index=facade_index,
-            building_floors=building.floors
+            building_floors=building.floors,
+            v_scale=_INDUSTRIAL_V_SCALE,
         )
 
     return mesh
@@ -418,7 +424,8 @@ def _generate_ring_walls(
     top_z: float,
     is_outer: bool,
     facade_index: int = 0,
-    building_floors: int = 1
+    building_floors: int = 1,
+    v_scale: float = 1.0,
 ) -> None:
     """
     Generate wall quads for a single ring with UV coordinates.
@@ -436,6 +443,7 @@ def _generate_ring_walls(
         is_outer: True for outer ring, False for holes
         facade_index: Facade style index [0..11] for UV mapping
         building_floors: Number of floors
+        v_scale: V multiplier (1/0.75 for Industrial_Atlas without roof section)
     """
     n = len(ring)
     if n < 3:
@@ -460,7 +468,7 @@ def _generate_ring_walls(
             continue
 
         # Get UVs for each floor segment
-        floor_uvs = compute_multi_floor_wall_uvs(edge_len, building_floors, facade_index)
+        floor_uvs = compute_multi_floor_wall_uvs(edge_len, building_floors, facade_index, v_scale=v_scale)
 
         # Calculate actual floor height to ensure walls reach top_z exactly
         # This handles cases where height_m is not exactly floors * 3.0m

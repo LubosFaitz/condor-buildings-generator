@@ -16,7 +16,7 @@ from ..models.mesh import MeshData
 from ..config import (
     CONDOR_MTL_KA, CONDOR_MTL_KD, CONDOR_MTL_KS,
     CONDOR_MTL_NS, CONDOR_MTL_D, CONDOR_MTL_ILLUM,
-    CONDOR_TEXTURE_PREFIX,
+    CONDOR_TEXTURE_PREFIX, MATERIAL_ALIAS,
 )
 
 logger = logging.getLogger(__name__)
@@ -452,6 +452,20 @@ def export_obj_lod1(
     return filepath
 
 
+def _condor_group_order(items):
+    """Keep groups alphabetical, but move the wind_turbine objects to just before
+    'pylones' (Condor needs the turbines ahead of the pylons in the file). If a
+    patch has no pylons (or no turbines), the order is left unchanged."""
+    items = list(items)
+    turb = [x for x in items if x[0].startswith('wind_turbine')]
+    idx = next((i for i, x in enumerate(items) if x[0] == 'pylones'), None)
+    if not turb or idx is None:
+        return items
+    rest = [x for x in items if not x[0].startswith('wind_turbine')]
+    pidx = next(i for i, x in enumerate(rest) if x[0] == 'pylones')
+    return rest[:pidx] + turb + rest[pidx:]
+
+
 def export_mesh_groups(
     groups: Dict[str, MeshData],
     filepath: str,
@@ -480,10 +494,11 @@ def export_mesh_groups(
     stats = ExportStats()
 
     # Filter out empty groups and sort for consistent output order
-    non_empty_groups = [
+    # (wind_turbine moved just before pylones - see _condor_group_order).
+    non_empty_groups = _condor_group_order([
         (name, mesh) for name, mesh in sorted(groups.items())
         if not mesh.is_empty()
-    ]
+    ])
 
     if not non_empty_groups:
         logger.warning("No non-empty mesh groups to export")
@@ -495,6 +510,7 @@ def export_mesh_groups(
         # Header
         f.write("# Condor Buildings Generator OBJ Export\n")
         f.write(f"# Objects: {len(non_empty_groups)}\n")
+        f.write("# Axis swap: True\n")
         if comment:
             f.write(f"# {comment}\n")
         f.write("\n")
@@ -508,8 +524,9 @@ def export_mesh_groups(
             # This makes Blender import each as a separate object
             f.write(f"o {group_name}\n")
 
-            # Write vertices for this object
-            for x, y, z in mesh.vertices:
+            # Write vertices for this object (Condor axis swap: (x,y,z) -> (y,-x,z))
+            for vert in mesh.vertices:
+                x, y, z = _condor_xform(vert, True)
                 f.write(f"v {x:.6f} {y:.6f} {z:.6f}\n")
 
             # Write UVs for this object
@@ -711,10 +728,10 @@ def export_condor_obj_mtl(
     if texture_prefix is None:
         texture_prefix = CONDOR_TEXTURE_PREFIX
 
-    non_empty = [
+    non_empty = _condor_group_order([
         (name, mesh) for name, mesh in sorted(groups.items())
         if not mesh.is_empty()
-    ]
+    ])
 
     if not non_empty:
         logger.warning("No non-empty mesh groups to export (Condor)")
@@ -732,9 +749,14 @@ def export_condor_obj_mtl(
         mf.write("# Condor Buildings Generator MTL\n")
         if comment:
             mf.write(f"# {comment}\n")
+        written_mats = set()
         for name, _mesh in non_empty:
-            matname = f"{material_prefix}{name}"
-            tex = texture_map.get(name)
+            matgroup = MATERIAL_ALIAS.get(name, name)
+            matname = f"{material_prefix}{matgroup}"
+            if matname in written_mats:
+                continue  # shared material already written (e.g. aerialway -> pylones)
+            written_mats.add(matname)
+            tex = texture_map.get(matgroup)
             mf.write(f"\nnewmtl {matname}\n")
             mf.write("Ka {:.6f} {:.6f} {:.6f}\n".format(*CONDOR_MTL_KA))
             mf.write("Kd {:.6f} {:.6f} {:.6f}\n".format(*CONDOR_MTL_KD))
@@ -760,7 +782,7 @@ def export_condor_obj_mtl(
 
         for group_name, mesh in non_empty:
             f.write(f"\no {group_name}\n")
-            f.write(f"usemtl {material_prefix}{group_name}\n")
+            f.write(f"usemtl {material_prefix}{MATERIAL_ALIAS.get(group_name, group_name)}\n")
 
             # Transformed vertices
             tverts = [_condor_xform(v, axis_swap) for v in mesh.vertices]

@@ -40,6 +40,7 @@ class MeshData:
     faces: List[List[int]] = field(default_factory=list)
     face_uvs: List[List[int]] = field(default_factory=list)  # Parallel to faces
     osm_id: Optional[str] = None
+    origin: Optional[Tuple[float, float, float]] = None
 
     def vertex_count(self) -> int:
         """Get number of vertices."""

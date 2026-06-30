@@ -54,7 +54,14 @@ class CONDOR_PT_main_panel(Panel):
 
         if props.single_patch_mode:
             # Single patch ID input
-            box.prop(props, "patch_id", text="Patch ID")
+            split = box.split(factor=0.30)
+            split.label(text="Patch ID:")
+            sub = split.split(factor=0.65)
+            sub.prop(props, "patch_id", text="")
+            sub.prop(props, "patch_tref", text="tr3f")
+            row_btns = box.row(align=True)
+            row_btns.operator("condor.import_patch", text="Import Patch", icon='IMPORT')
+            row_btns.operator("condor.export_terrain", text="Export Terrain", icon='EXPORT')
         else:
             # Patch range inputs
             col = box.column(align=True)
@@ -76,6 +83,8 @@ class CONDOR_PT_main_panel(Panel):
 
             if total > 0:
                 box.label(text=f"Patches: {total} ({x_count}×{y_count})", icon='INFO')
+                box.prop(props, "import_patch_terrain")
+                box.operator("condor.import_patch", text="Import Patch", icon='IMPORT')
 
         # --- OSM Data Source ---
         box = layout.box()
@@ -84,6 +93,7 @@ class CONDOR_PT_main_panel(Panel):
 
         if props.osm_source == 'DOWNLOAD':
             box.label(text="Will download from Overpass API", icon='URL')
+        box.prop(props, "use_msprint")
 
         # --- Output Options ---
         box = layout.box()
@@ -97,12 +107,56 @@ class CONDOR_PT_main_panel(Panel):
         # --- Powerlines (optional extra object) ---
         box = layout.box()
         box.label(text="Powerlines", icon='OUTLINER_DATA_GREASEPENCIL')
-        box.prop(props, "generate_powerlines")
+        row = box.row(align=True)
+        row.prop(props, "generate_powerlines")
+        # Randomized wind turbine applies only to file mode (Import to Blender off),
+        # so it's greyed out when importing to Blender.
+        sub = row.row(align=True)
+        sub.enabled = not props.import_to_blender
+        sub.prop(props, "randomize_wind_turbines", text="Randomized wind turbine")
         if props.generate_powerlines:
-            box.label(text="Pylons + cables -> 'pylones' (Pylons.dds)", icon='INFO')
+            box.label(text="Pylons + cables + aerialways -> 'pylones' (Pylons.dds)", icon='INFO')
+            # Warning balls checkbox hidden on purpose: 'warning_balls' is default
+            # ON (see properties.py), so balls are always added with powerlines.
+            # box.prop(props, "warning_balls")
+        turbines_in_scene = any(
+            obj.name == 'wind_turbine' or obj.name.startswith('wind_turbine_')
+            for obj in bpy.data.objects
+        )
+        if turbines_in_scene:
+            box.prop(props, "wind_turbine_rotation", slider=True)
+            box.operator("condor.merge_wind_turbines", icon='AUTOMERGE_ON')
+
+        # --- Other objects (collapsible, right under Powerlines) ---
+        # Container for extra objects (chimneys now, more may be added). Drawn
+        # inline here so it sits under the Powerlines box; sub-panels would always
+        # render after the whole main panel.
+        box = layout.box()
+        header = box.row(align=True)
+        header.prop(
+            props, "show_other_objects", text="Other objects", emboss=False,
+            icon='TRIA_DOWN' if props.show_other_objects else 'TRIA_RIGHT',
+        )
+        if props.show_other_objects:
+            # Chimney
+            sub = box.box()
+            row_title = sub.row(align=True)
+            row_title.label(text="Chimney", icon='MESH_CYLINDER')
+            row_title.prop(props, "chimney_batch", text="Batch")
+            row = sub.row(align=True)
+            row.operator("condor.import_chimneys", text="Import", icon='IMPORT')
+            row.operator("condor.merge_chimneys", text="Merge", icon='AUTOMERGE_ON')
 
         # --- Import Button ---
         layout.separator()
+
+        # add MTL (file mode) + Batch processing
+        # DOČASNĚ SKRYTO - oba checkboxy zakomentované. 'add_mtl' je ale defaultně
+        # ZAPNUTÝ (viz properties.py), takže MTL se ve file-módu tvoří pořád, jen
+        # checkbox není vidět. Odkomentovat pro zobrazení:
+        # row_opts = layout.row(align=True)
+        # row_opts.prop(props, "add_mtl")
+        # row_opts.prop(props, "batch_processing")
 
         row = layout.row(align=True)
         row.scale_y = 1.8
@@ -169,6 +223,9 @@ class CONDOR_PT_roof_options_panel(Panel):
             sub.prop(props, "flat_roof_terrain_photo")
             if props.flat_roof_terrain_photo:
                 sub.label(text="Flat roofs use patch orthophoto t<patch>.dds", icon='IMAGE_DATA')
+                row = sub.row()
+                row.enabled = props.flat_roof_terrain_photo
+                row.prop(props, "flat_roof_industrial_only")
 
         # Help text
         if props.roof_selection_mode == 'GEOMETRY':

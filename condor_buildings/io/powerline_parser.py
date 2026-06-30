@@ -27,7 +27,7 @@ import argparse
 import os
 import xml.etree.ElementTree as ET
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
 
 from ..projection import IProjector, create_projector
@@ -62,6 +62,14 @@ VOLTAGE_MEDIUM_KV = 45.0
 # `voltage=230` minor_line feeders were being drawn as a line along a road that is
 # almost certainly underground, 2026-06-10.)
 MIN_DRAWN_VOLTAGE_KV = 1.0
+
+
+@dataclass
+class WindTurbine:
+    node_id: str
+    x: float
+    y: float
+    in_patch: bool
 
 
 @dataclass
@@ -152,8 +160,15 @@ class PowerLine:
 @dataclass
 class PowerlineParseResult:
     lines: List[PowerLine]
+    turbines: List[WindTurbine]
     stats: Dict[str, int]
     warnings: List[str]
+    # Aerodrome centres (projected X/Y), for warning-ball placement near airports.
+    aerodromes: List[Tuple[float, float]] = field(default_factory=list)
+    # Airport ball zones as (centre_x, centre_y, radius). Built from runways
+    # (centre of the runway, radius = half its length + 458 m); falls back to the
+    # aerodrome centre if no runway is mapped.
+    airport_zones: List[Tuple[float, float, float]] = field(default_factory=list)
 
 
 def _parse_voltage_kv(voltage: Optional[str]) -> Optional[float]:
@@ -336,7 +351,97 @@ def parse_powerlines(
            if low_voltage_ways else "")
     )
 
-    return PowerlineParseResult(lines=lines, stats=stats, warnings=warnings)
+    turbines: List[WindTurbine] = []
+    for node_elem in root.findall("node"):
+        tags = {t.get("k"): t.get("v") for t in node_elem.findall("tag")}
+        if tags.get("power") == "generator" and tags.get("generator:source") == "wind":
+            nid = node_elem.get("id")
+            if nid in node_coords:
+                lat, lon = node_coords[nid]
+                x, y = projector.project(lat, lon)
+                in_patch = -patch_half <= x <= patch_half and -patch_half <= y <= patch_half
+                turbines.append(WindTurbine(node_id=nid, x=x, y=y, in_patch=in_patch))
+
+    stats["turbines_total"] = len(turbines)
+    stats["turbines_inside"] = sum(1 for t in turbines if t.in_patch)
+
+    # Aerodromes (aeroway=aerodrome) as centre points, for warning-ball placement.
+    # Nodes use their own coords; ways/areas use the centroid of their nodes.
+    aerodromes: List[Tuple[float, float]] = []
+    for node_elem in root.findall("node"):
+        tags = {t.get("k"): t.get("v") for t in node_elem.findall("tag")}
+        if tags.get("aeroway") == "aerodrome":
+            nid = node_elem.get("id")
+            if nid in node_coords:
+                aerodromes.append(projector.project(*node_coords[nid]))
+    for way_elem in root.findall("way"):
+        tags = {t.get("k"): t.get("v") for t in way_elem.findall("tag")}
+        if tags.get("aeroway") == "aerodrome":
+            coords = [node_coords[nd.get("ref")] for nd in way_elem.findall("nd")
+                      if nd.get("ref") in node_coords]
+            if coords:
+                lat = sum(c[0] for c in coords) / len(coords)
+                lon = sum(c[1] for c in coords) / len(coords)
+                aerodromes.append(projector.project(lat, lon))
+    stats["aerodromes"] = len(aerodromes)
+
+    # Airport ball zones from runways: centre of the runway, radius = half its
+    # length + 458 m (so the zone covers the runway plus 458 m past each end).
+    airport_zones: List[Tuple[float, float, float]] = []
+    for way_elem in root.findall("way"):
+        tags = {t.get("k"): t.get("v") for t in way_elem.findall("tag")}
+        if tags.get("aeroway") != "runway":
+            continue
+        nds = [nd.get("ref") for nd in way_elem.findall("nd")]
+        ends = [node_coords[r] for r in (nds[0], nds[-1])
+                if nds and r in node_coords]
+        if len(ends) != 2:
+            continue
+        x1, y1 = projector.project(*ends[0])
+        x2, y2 = projector.project(*ends[1])
+        cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+        # Half length: prefer the runway `length` tag in metres (the mapped end
+        # nodes are often a bit short of the real ends); else use the geometry.
+        half = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5 / 2.0
+        try:
+            half = float(tags.get("length", "").lower().replace("m", "").strip()) / 2.0
+        except (ValueError, AttributeError):
+            pass
+        airport_zones.append((cx, cy, half + 458.0))
+    # Fallback: if no runway is mapped, use the aerodrome centre with a default
+    # zone (a typical half-runway ~750 m + 458 m).
+    if not airport_zones:
+        airport_zones = [(ax, ay, 750.0 + 458.0) for (ax, ay) in aerodromes]
+    stats["airport_zones"] = len(airport_zones)
+
+    return PowerlineParseResult(lines=lines, turbines=turbines, stats=stats,
+                                warnings=warnings, aerodromes=aerodromes,
+                                airport_zones=airport_zones)
+
+
+def read_airport_zones(airports_path: str, projector: IProjector):
+    """
+    Read the shared ``airports.json`` (written by the 3x3 airport search) and
+    project each airport's runway centre into THIS patch's X/Y, returning ball
+    zones (x, y, radius = length/2 + 458 m). Returns [] if missing/unreadable.
+    """
+    import json
+    if not airports_path or not os.path.exists(airports_path):
+        return []
+    try:
+        with open(airports_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return []
+    zones = []
+    for _name, info in (data or {}).items():
+        center = info.get("center")
+        length = info.get("length")
+        if not center or length is None:
+            continue
+        x, y = projector.project(center[0], center[1])
+        zones.append((x, y, length / 2.0 + 458.0))
+    return zones
 
 
 def format_report(result: PowerlineParseResult, patch_id: str = "") -> str:
