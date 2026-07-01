@@ -94,6 +94,13 @@ def build_overpass_query(
     parts.append(f'  way["aeroway"="aerodrome"]({bbox});')
     parts.append(f'  way["aeroway"="runway"]({bbox});')
 
+    # Bridges (road + railway + bridge structures) for the optional bridge feature.
+    # The building parser ignores non-building ways, so this is harmless. The ``>;``
+    # recursion below pulls each bridge way's node coordinates.
+    parts.append(f'  way["bridge"]["highway"]({bbox});')
+    parts.append(f'  way["bridge"]["railway"]({bbox});')
+    parts.append(f'  way["man_made"="bridge"]({bbox});')
+
     body = "\n".join(parts)
     query = f"""
 [out:xml][timeout:90];
@@ -506,14 +513,16 @@ def _parse_airports(content, search_bbox=None):
             aerodromes.append((tags['name'], (la, la, lo, lo), (la, lo)))
 
     result = {}
+    disused_runways = {}  # name -> disused runway, used only if no active runway
     for w in root.findall('way'):
         tags = {t.get('k'): t.get('v') for t in w.findall('tag')}
         if tags.get('aeroway') != 'runway':
             continue
-        # Skip disused / abandoned runways (taxiway-like stubs are caught below).
-        if tags.get('disused') == 'yes' or any(('disused' in k or 'abandoned' in k)
-                                               for k in tags):
-            continue
+        # Disused/abandoned runways are kept SEPARATELY (used only as a fallback for
+        # an aerodrome with no active runway, e.g. a former airfield) - so a former
+        # airport's zone still sits on its real runway, not the polygon centroid.
+        is_disused = tags.get('disused') == 'yes' or any(
+            ('disused' in k or 'abandoned' in k) for k in tags)
         nds = [nd.get('ref') for nd in w.findall('nd')]
         ends = [nodes[r] for r in (nds[0], nds[-1]) if nds and r in nodes]
         if len(ends) != 2:
@@ -524,11 +533,13 @@ def _parse_airports(content, search_bbox=None):
         clat = (ends[0][0] + ends[1][0]) / 2.0
         clon = (ends[0][1] + ends[1][1]) / 2.0
         name = _airport_name(clat, clon, aerodromes, tags)
-        cur = result.get(name)
+        entry = {"length": round(length, 1),
+                 "center": [round(clat, 7), round(clon, 7)],
+                 "source": "runway_disused" if is_disused else "runway"}
+        target = disused_runways if is_disused else result
+        cur = target.get(name)
         if cur is None or length > cur["length"]:     # keep the longest runway
-            result[name] = {"length": round(length, 1),
-                            "center": [round(clat, 7), round(clon, 7)],
-                            "source": "runway"}
+            target[name] = entry
 
     # Aerodromes with NO mapped runway (runway not in this search area): emit a
     # zone from the airport centre with a DEFAULT length (the airport bbox is the
@@ -536,6 +547,11 @@ def _parse_airports(content, search_bbox=None):
     # patch that does see the runway overwrites this (see download_airports_for_patch).
     for name, _bb, cen in aerodromes:
         if name in result:
+            continue
+        # No active runway: prefer a DISUSED runway (its real centre + length) over
+        # the aerodrome centroid; only when there's no runway at all use the default.
+        if name in disused_runways:
+            result[name] = disused_runways[name]
             continue
         if search_bbox is not None and not (
                 search_bbox[0] <= cen[0] <= search_bbox[1] and
@@ -582,13 +598,12 @@ def download_airports_for_patch(patch_metadata, autogen_dir):
             except Exception:
                 existing = {}
         changed = False
+        # Priority: active runway > disused runway > aerodrome centroid fallback.
+        _prio = {"aerodrome": 0, "runway_disused": 1, "runway": 2}
         for name, data in found.items():
             old = existing.get(name)
-            if old is None:                # new airport
-                existing[name] = data
-                changed = True
-            elif old.get("source") != "runway" and data.get("source") == "runway":
-                existing[name] = data      # a real runway overrides the fallback
+            if old is None or _prio.get(data.get("source"), 0) > _prio.get(old.get("source"), 0):
+                existing[name] = data      # new airport, or a better source
                 changed = True
         if changed:
             with open(path, 'w', encoding='utf-8') as f:

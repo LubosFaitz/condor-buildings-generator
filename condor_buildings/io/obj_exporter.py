@@ -453,17 +453,26 @@ def export_obj_lod1(
 
 
 def _condor_group_order(items):
-    """Keep groups alphabetical, but move the wind_turbine objects to just before
-    'pylones' (Condor needs the turbines ahead of the pylons in the file). If a
-    patch has no pylons (or no turbines), the order is left unchanged."""
+    """Keep groups alphabetical, but force a fixed tail at the very end of the file
+    (Condor needs these specific objects last, and 'pylones' must be the very last):
+        <everything else, alphabetical> , wind_turbine* , transmitter , pylones
+    Any of these that are missing are simply skipped."""
     items = list(items)
-    turb = [x for x in items if x[0].startswith('wind_turbine')]
-    idx = next((i for i, x in enumerate(items) if x[0] == 'pylones'), None)
-    if not turb or idx is None:
-        return items
-    rest = [x for x in items if not x[0].startswith('wind_turbine')]
-    pidx = next(i for i, x in enumerate(rest) if x[0] == 'pylones')
-    return rest[:pidx] + turb + rest[pidx:]
+
+    def is_turb(n):
+        return n.startswith('wind_turbine')
+
+    def is_trans(n):
+        return n == 'transmitter' or n == 'condor_transmitter'
+
+    def is_pyl(n):
+        return n == 'pylones'
+
+    turb  = [x for x in items if is_turb(x[0])]
+    trans = [x for x in items if is_trans(x[0])]
+    pyl   = [x for x in items if is_pyl(x[0])]
+    rest  = [x for x in items if not (is_turb(x[0]) or is_trans(x[0]) or is_pyl(x[0]))]
+    return rest + turb + trans + pyl
 
 
 def export_mesh_groups(

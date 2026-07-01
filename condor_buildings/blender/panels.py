@@ -147,6 +147,13 @@ class CONDOR_PT_main_panel(Panel):
             row.operator("condor.import_chimneys", text="Import", icon='IMPORT')
             row.operator("condor.merge_chimneys", text="Merge", icon='AUTOMERGE_ON')
 
+            # --- TRANSMITTER add-on (removable: delete blender/transmitters.py) ---
+            try:
+                from . import transmitters
+                transmitters.draw_panel(box, context)
+            except Exception:
+                pass
+
         # --- Import Button ---
         layout.separator()
 

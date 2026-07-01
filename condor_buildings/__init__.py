@@ -12,14 +12,14 @@ Milestone A: Single-patch prototype with LOD0/LOD1 OBJ export.
 Milestone B: Blender addon integration.
 """
 
-__version__ = "0.9.4"
+__version__ = "0.9.5"
 __author__ = "Condor Buildings Team"
 
 # Blender addon metadata (must be at package root for Blender to detect)
 bl_info = {
     "name": "Condor Buildings Generator",
     "author": "Condor Buildings Team (Wiek Schoenmakers, Juan Luis Gabriel, Claude)",
-    "version": (0, 9, 4),
+    "version": (0, 9, 5),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Condor",
     "description": "Generate 3D buildings from OSM data for Condor 3 flight simulator",
@@ -38,10 +38,22 @@ def register():
         print(f"Condor Buildings Generator v{__version__} registered")
     except ImportError as e:
         print(f"Condor Buildings: Blender modules not available ({e})")
+    # --- TRANSMITTER add-on (removable: delete blender/transmitters.py) ---
+    try:
+        from .blender import transmitters
+        transmitters.register()
+    except Exception as e:
+        print(f"Condor Buildings: transmitters not loaded ({e})")
 
 
 def unregister():
     """Unregister addon from Blender."""
+    # --- TRANSMITTER add-on (removable) ---
+    try:
+        from .blender import transmitters
+        transmitters.unregister()
+    except Exception:
+        pass
     try:
         from .blender import panels, operators, properties
         panels.unregister()

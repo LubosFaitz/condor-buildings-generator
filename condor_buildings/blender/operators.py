@@ -720,6 +720,7 @@ class CONDOR_OT_import_buildings(Operator):
                 # writing the OBJ (+ MTL if 'add mtl batch') and the JSON report,
                 # adding the chimney if 'Batch' is on, then deleting the temp
                 # objects. Logic in batch_processing.export_filemode_via_blender.
+                patch_exported = None  # file-mode: suffix -> real exported object names
                 if file_mode:
                     try:
                         # Copy the asset textures (Pylons.dds / WindTurbine.dds) used
@@ -727,7 +728,7 @@ class CONDOR_OT_import_buildings(Operator):
                         # like the Import-to-Blender path does.
                         _copy_asset_textures_for_result(result, paths)
                         from .batch_processing import export_filemode_via_blender
-                        export_filemode_via_blender(context, props, patch_id, paths, result)
+                        patch_exported = export_filemode_via_blender(context, props, patch_id, paths, result)
                     except Exception as e:
                         import traceback
                         traceback.print_exc()
@@ -852,14 +853,28 @@ class CONDOR_OT_import_buildings(Operator):
                         airports = airports_in_patch(paths['autogen'], projector, PATCH_HALF)
                     except Exception:
                         airports = []
+                    def _mark(names):
+                        names = sorted(names)
+                        if has_aerial:
+                            names = [n + " (aerialway)" if n == 'pylones' else n for n in names]
+                        return names
+
                     patch_ms = int((time.time() - patch_start) * 1000)
                     run_total_ms += patch_ms
-                    run_blocks.append((patch_id, patch_ms,
-                                       _final_names(result.grouped_lod0), airports))
+                    if patch_exported is not None:
+                        # File mode: the REAL objects written to the OBJ - chimney /
+                        # transmitter appear only if actually generated.
+                        lod0_names = _mark(patch_exported.get("", []))
+                        lod1_names = _mark(patch_exported.get("_LOD1", []))
+                        has_lod1 = "_LOD1" in patch_exported
+                    else:
+                        lod0_names = _final_names(result.grouped_lod0)
+                        lod1_names = _final_names(result.grouped_lod1)
+                        has_lod1 = bool(result.grouped_lod1)
+                    run_blocks.append((patch_id, patch_ms, lod0_names, airports))
                     run_n_lod0 += 1
-                    if result.grouped_lod1:
-                        run_blocks.append((f"{patch_id}_LOD1", patch_ms,
-                                           _final_names(result.grouped_lod1), airports))
+                    if has_lod1:
+                        run_blocks.append((f"{patch_id}_LOD1", patch_ms, lod1_names, airports))
                         run_n_lod1 += 1
                 except Exception as e:
                     print(f"[Condor] run log collect failed: {e}")
@@ -1586,23 +1601,33 @@ class CONDOR_OT_import_chimneys(Operator):
                     # Scale model height to the real OSM height (only if a height
                     # tag is present); width stays, foot stays on the terrain.
                     if has_height and native_height > 0:
-                        ch_obj.scale.z = height / native_height
+                        _s = height / native_height
+                        ch_obj.scale = (_s, _s, _s)  # uniform - keep shape
 
                     foot_z = 0.0
+                    got_foot = False
                     if props.import_patch_terrain and terrain_obj:
-                        depsgraph = context.evaluated_depsgraph_get()
-                        terrain_eval = terrain_obj.evaluated_get(depsgraph)
-                        ray_origin = (cx, cy, 10000.0)
-                        ray_dir = (0.0, 0.0, -1.0)
-                        hit, loc, _, _ = terrain_eval.ray_cast(ray_origin, ray_dir)
-                        if hit:
-                            foot_z = loc.z
-                    elif terrain_mesh:
+                        try:
+                            depsgraph = context.evaluated_depsgraph_get()
+                            terrain_eval = terrain_obj.evaluated_get(depsgraph)
+                            hit, loc, _, _ = terrain_eval.ray_cast(
+                                (cx, cy, 10000.0), (0.0, 0.0, -1.0))
+                            if hit:
+                                foot_z = loc.z
+                                got_foot = True
+                        except Exception:
+                            # terrain HIDDEN -> no evaluated mesh; fall back to file
+                            if terrain_mesh is None:
+                                from ..io.terrain_loader import load_terrain
+                                try:
+                                    terrain_mesh = load_terrain(terrain_obj_file)
+                                except Exception:
+                                    terrain_mesh = None
+                    if not got_foot and terrain_mesh:
                         from ..models.geometry import Point2D, BBox
                         pt = Point2D(cx, cy)
                         query_bbox = BBox(cx - 1, cy - 1, cx + 1, cy + 1)
-                        candidates = terrain_mesh.get_triangles_in_bbox(query_bbox)
-                        for tri_idx in candidates:
+                        for tri_idx in terrain_mesh.get_triangles_in_bbox(query_bbox):
                             tri = terrain_mesh.triangles[tri_idx]
                             if tri.contains_point_2d(pt):
                                 z = tri.z_at_xy(cx, cy)

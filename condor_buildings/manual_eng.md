@@ -586,6 +586,28 @@ Merges all chimneys of the current patch into a single object ready for Condor e
 
 ---
 
+### Transmitter — in the Other objects section
+
+Next to chimneys, the **Other objects** box also has a **Transmitter** row with **Import**, **Merge** buttons and a **Batch** checkbox. It generates communication transmitters (towers/masts) from OSM.
+
+**OSM detection:** `man_made=communications_tower`, or `man_made=mast` / `man_made=tower` together with `tower:type=communication` (or another `communication*` tag). Height is taken from the `height` tag. A building at the transmitter location is **suppressed** (like chimneys). The OSM download also automatically adds these masts/towers to the query.
+
+**Models** (`assets/3Dobjects`):
+- height ≤ 100 m → `transmitter_small.obj`
+- height > 100 m → `transmitter_big.obj`
+
+The model is **uniformly scaled** to the height (keeps its shape), the base sits on the terrain. **Both models share one material `condor_transmitter` and one texture `transmitter.dds`.**
+
+**Batch (checkbox)** — file mode only (Import to Blender off): after generating the OBJ, the transmitter is added into it as the object **`transmitter`** (material `condor_transmitter`, texture `transmitter.dds`). It is written **right before `pylones`**, so `pylones` stays the last object in the file, and it keeps the **model's own normals** (same shading as a manual import). Off by default.
+
+**Import** — imports the transmitters for the given patch. Before importing it deletes existing `Transmitter_{patch_id}_*` (to avoid `.001` duplicates), places the models on the terrain and puts them in the subcollections `transmitter_big_{patch_id}` / `transmitter_small_{patch_id}`.
+
+**Merge** — merges **all transmitters of the patch (big and small) into ONE object named `transmitter`** with the material `condor_transmitter`. Empty subcollections and duplicate materials are cleaned up.
+
+The whole transmitter feature lives in one removable file `blender/transmitters.py`.
+
+---
+
 ## Object-to-texture mapping (TEXTURE_MAP)
 
 The plugin maintains an internal table that assigns each type of generated object its `.dds` texture file. This table is used when assigning materials in Blender and when writing the MTL file for Condor.
@@ -605,6 +627,7 @@ The plugin maintains an internal table that assigns each type of generated objec
 | `pylones` | `Pylons.dds` | Pylons and power line cables **+ aerialways** (merged into the same object, same texture) |
 | `wind_turbine` | `WindTurbine.dds` | Wind turbines |
 | `chimney` | `Chimney.dds` | Chimneys |
+| `transmitter` | `transmitter.dds` | Communication transmitters (big and small share one material and texture) |
 
 ### Which OSM tags belong to the INDUSTRIAL category
 

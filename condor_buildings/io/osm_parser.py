@@ -134,10 +134,15 @@ def parse_osm_file(
         if 'building' not in relation.tags:
             continue
 
-        # Skip chimneys (man_made=chimney): some are also tagged building=yes,
-        # which would otherwise produce a tall round flat-roof "cylinder" right
-        # under the chimney model. They are not real buildings.
-        if relation.tags.get('man_made') == 'chimney':
+        # Skip chimneys AND communication masts/towers: some are mis-tagged
+        # building=yes, which would make a round "cylinder" under the chimney /
+        # transmitter model. They are not real buildings.
+        _mm = relation.tags.get('man_made')
+        if _mm in ('chimney', 'communications_tower') or (
+                _mm in ('mast', 'tower') and (
+                    relation.tags.get('tower:type') == 'communication'
+                    or any(k == 'communication' or k.startswith('communication:')
+                           for k in relation.tags))):
             continue
 
         stats['building_relations'] += 1
@@ -170,10 +175,15 @@ def parse_osm_file(
         if 'building' not in way.tags:
             continue
 
-        # Skip chimneys (man_made=chimney): some are also tagged building=yes,
-        # which would otherwise produce a tall round flat-roof "cylinder" right
-        # under the chimney model. They are not real buildings.
-        if way.tags.get('man_made') == 'chimney':
+        # Skip chimneys AND communication masts/towers: some are mis-tagged
+        # building=yes, which would make a round "cylinder" under the chimney /
+        # transmitter model. They are not real buildings.
+        _mm = way.tags.get('man_made')
+        if _mm in ('chimney', 'communications_tower') or (
+                _mm in ('mast', 'tower') and (
+                    way.tags.get('tower:type') == 'communication'
+                    or any(k == 'communication' or k.startswith('communication:')
+                           for k in way.tags))):
             continue
 
         stats['building_ways'] += 1

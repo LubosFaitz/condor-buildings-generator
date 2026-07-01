@@ -739,7 +739,7 @@ def build_chimney_meshdata(props, paths, patch_id, low=False):
         sz = (h / native_h) if (has_h and native_h > 0) else 1.0
         fz = foot_z_at(cx, cy)
         inst = MeshData()
-        inst.vertices = [(vx + cx, vy + cy, vz * sz + fz) for (vx, vy, vz) in template.vertices]
+        inst.vertices = [(vx * sz + cx, vy * sz + cy, vz * sz + fz) for (vx, vy, vz) in template.vertices]
         inst.uvs = list(template.uvs)
         inst.faces = [list(face) for face in template.faces]
         inst.face_uvs = [list(fu) for fu in template.face_uvs]
@@ -880,6 +880,7 @@ def export_filemode_via_blender(context, props, patch_id, paths, result):
     turbine_seed = random.randint(0, 2**31 - 1)
     randomize_turbines = props.randomize_wind_turbines
 
+    exported = {}  # suffix -> object names actually written to the OBJ (for the log)
     for suffix, grouped in lods:
         tmp_col = f"_fmtmp_{patch_id}{suffix}"
         _remove_collection(tmp_col)  # clear any leftover
@@ -918,6 +919,13 @@ def export_filemode_via_blender(context, props, patch_id, paths, result):
             # with the export_condor_obj_mtl branch, else export_mesh_groups.)
             tm = dict(condor_tex_map)
             tm['chimney'] = 'Chimney.dds'
+            # --- TRANSMITTER add-on (removable: delete blender/transmitters.py) ---
+            try:
+                from . import transmitters
+                transmitters.add_filemode_groups(groups, props, paths, patch_id)
+                tm['condor_transmitter'] = 'transmitter.dds'
+            except Exception as e:
+                print(f"[transmitter] file-mode add failed: {e}")
             export_condor_obj_mtl(
                 groups, out_obj, tm,
                 comment=f"Patch {patch_id}{suffix} (file mode, correct roofs)",
@@ -926,6 +934,7 @@ def export_filemode_via_blender(context, props, patch_id, paths, result):
                 include_normals=CONDOR_EXPORT_NORMALS,
             )
             print(f"[filemode] {patch_id}{suffix}: exported {len(groups)} objects (correct roofs)")
+            exported[suffix] = sorted(groups.keys())
         finally:
             _remove_collection(tmp_col)
 
@@ -935,3 +944,5 @@ def export_filemode_via_blender(context, props, patch_id, paths, result):
             json.dump(asdict(result.report), f, indent=2)
     except Exception as e:
         logger.warning("filemode: report json failed: %s", e)
+
+    return exported
