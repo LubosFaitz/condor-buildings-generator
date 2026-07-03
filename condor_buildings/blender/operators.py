@@ -1103,14 +1103,14 @@ class CONDOR_OT_export_condor(Operator):
                 if col:
                     lods.append(("LOD0", col))
                 else:
-                    errors.append(f"Patch {patch_id}: kolekce '{col_name}' neexistuje — nejdřív spusť Generate Buildings")
+                    errors.append(f"Patch {patch_id}: collection '{col_name}' does not exist — run Generate Buildings first")
             if props.output_lod in ('LOD1', 'BOTH'):
                 col_name_lod1 = f"Condor_{props.landscape_name}_{patch_id}_LOD1"
                 col1 = bpy.data.collections.get(col_name_lod1)
                 if col1:
                     lods.append(("LOD1", col1))
                 elif props.output_lod == 'LOD1':
-                    errors.append(f"Patch {patch_id}: kolekce '{col_name_lod1}' neexistuje — nejdřív spusť Generate Buildings")
+                    errors.append(f"Patch {patch_id}: collection '{col_name_lod1}' does not exist — run Generate Buildings first")
 
             if not lods:
                 continue
@@ -1155,7 +1155,7 @@ class CONDOR_OT_export_condor(Operator):
                                         break
 
                 if not groups:
-                    errors.append(f"Patch {patch_id} {lod_name}: kolekce neobsahuje žádné mesh objekty")
+                    errors.append(f"Patch {patch_id} {lod_name}: collection has no mesh objects")
                     continue
 
                 suffix = "" if lod_name == "LOD0" else f"_{lod_name}"
@@ -2171,7 +2171,7 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
 
         for patch_id in patch_ids:
 
-            # --- TERRAIN IMPORT (jen když je checkbox zapnutý) ---
+            # --- TERRAIN IMPORT (only when the checkbox is enabled) ---
             if props.import_patch_terrain:
                 terrain_obj_name = f"TR3{patch_id}"
                 terrain_col = bpy.data.collections.get("Patch_Terrain")
@@ -2311,12 +2311,12 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
             imported_patches.append(patch_id)
             # --- END OBJ IMPORT ---
 
-        # Najít chybějící textury
+        # Find missing textures
         tex_dir = os.path.join(paths['autogen'], "Textures")
         if os.path.exists(tex_dir):
             bpy.ops.file.find_missing_files(directory=tex_dir)
 
-        # --- POZICOVÁNÍ PATCHŮ (jen pokud je terrain checkbox zapnutý) ---
+        # --- PATCH POSITIONING (only if the terrain checkbox is enabled) ---
         if props.import_patch_terrain:
             min_x = props.patch_x_min
             min_y = props.patch_y_min
@@ -2339,7 +2339,7 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
                     if terrain_obj:
                         terrain_obj.location.x += offset_x
                         terrain_obj.location.y += offset_y
-        # --- END POZICOVÁNÍ PATCHŮ ---
+        # --- END PATCH POSITIONING ---
 
         # --- VIEWPORT ---
         if props.import_patch_terrain:

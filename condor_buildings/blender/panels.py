@@ -165,9 +165,9 @@ class CONDOR_PT_main_panel(Panel):
         layout.separator()
 
         # add MTL (file mode) + Batch processing
-        # DOČASNĚ SKRYTO - oba checkboxy zakomentované. 'add_mtl' je ale defaultně
-        # ZAPNUTÝ (viz properties.py), takže MTL se ve file-módu tvoří pořád, jen
-        # checkbox není vidět. Odkomentovat pro zobrazení:
+        # TEMPORARILY HIDDEN - both checkboxes commented out. 'add_mtl' is however
+        # ON by default (see properties.py), so the MTL is still written in file mode,
+        # the checkbox just isn't shown. Uncomment to display:
         # row_opts = layout.row(align=True)
         # row_opts.prop(props, "add_mtl")
         # row_opts.prop(props, "batch_processing")

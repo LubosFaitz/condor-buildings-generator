@@ -216,7 +216,7 @@ def _export_patch(props, patch_id, paths, lods):
                                 break
 
         if not groups:
-            errors.append(f"Patch {patch_id} {lod_name}: kolekce neobsahuje žádné mesh objekty")
+            errors.append(f"Patch {patch_id} {lod_name}: collection has no mesh objects")
             continue
 
         suffix = "" if lod_name == "LOD0" else f"_{lod_name}"
@@ -279,7 +279,7 @@ def process_patch(context, props, patch_id, paths):
     lods = _patch_collections(props.landscape_name, patch_id, props.output_lod)
     if not lods:
         print(f"[BATCH] {patch_id}: no collection to export - SKIPPED")
-        return [f"Patch {patch_id}: žádná kolekce k exportu (batch)"]
+        return [f"Patch {patch_id}: no collection to export (batch)"]
     print(f"[BATCH] {patch_id}: generated, collections: {', '.join(n for n, _c in lods)}")
 
     # 1) random rotation of turbines (one angle for the whole patch)

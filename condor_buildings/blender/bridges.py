@@ -1130,9 +1130,9 @@ class CONDOR_OT_import_bridges(Operator):
         if total_bridges > 0:
             _copy_bridge_texture(paths)
 
-        msg = (f"Bridges: postaveno {total_bridges} (pilire {total_pillars}), "
-               f"preskoceno mimo udoli/reku {total_skipped}, "
-               f"mostu v OSM {total_found}, rek {total_waterways}")
+        msg = (f"Bridges: built {total_bridges} (pillars {total_pillars}), "
+               f"skipped (not over valley/river) {total_skipped}, "
+               f"bridges in OSM {total_found}, rivers {total_waterways}")
         self.report({'INFO'} if total_bridges > 0 else {'WARNING'}, msg)
         return {'FINISHED'}
 
