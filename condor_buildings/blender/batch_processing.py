@@ -934,7 +934,22 @@ def export_filemode_via_blender(context, props, patch_id, paths, result):
                 include_normals=CONDOR_EXPORT_NORMALS,
             )
             print(f"[filemode] {patch_id}{suffix}: exported {len(groups)} objects (correct roofs)")
-            exported[suffix] = sorted(groups.keys())
+            # List the objects ACTUALLY written to the OBJ (its 'o <name>' lines), so
+            # the run log shows EVERYTHING really in the file - including objects that
+            # add-ons append through the exporter wrapper (e.g. 'bridges'), which are
+            # NOT in `groups`. This keeps the log automatically in sync with the map of
+            # generated objects, with nothing hand-listed.
+            obj_names = []
+            try:
+                with open(out_obj, encoding='utf-8') as _fobj:
+                    for _line in _fobj:
+                        if _line.startswith('o '):
+                            _nm = _line[2:].strip()
+                            if _nm and _nm not in obj_names:
+                                obj_names.append(_nm)
+            except Exception:
+                obj_names = list(groups.keys())
+            exported[suffix] = sorted(obj_names)
         finally:
             _remove_collection(tmp_col)
 

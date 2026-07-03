@@ -608,6 +608,34 @@ The whole transmitter feature lives in one removable file `blender/transmitters.
 
 ---
 
+### Bridges — in the Other objects section
+
+The **Other objects** box also has a **Bridges** row with an **Import** button and a **Batch** checkbox. It generates road and rail bridges over **rivers and valleys** as a single object **`bridges`** (deck + railings + pillars) with the `Bridge.dds` texture (material `condor_bridge`).
+
+**What is built** (from OSM ways tagged `bridge=*`):
+- **Roads** (`highway=*`) — a deck 7 m of carriageway + 2× footpath = 11 m.
+- **Motorways** (`motorway`) — **one 28 m deck** (both directions together, not two overlapping).
+- **Railways** (`railway`) — 5 m per track; a multi-track line is merged into one wide deck.
+- Skipped: footways/cycleways, trams, and bridges **shorter than 20 m**.
+
+**Build condition:** a bridge is only built where it crosses **water** (from the orthophoto alpha channel of `t{patch_id}.dds`) or a **valley**. Water is downloaded together with the OSM — rivers (`waterway=*`) are added to the query automatically.
+
+**Deck properties:**
+- The deck **bows into an arch** — mid-span sits ~5 m above the water surface.
+- A **curved bridge follows the road's path** — over the water the deck follows the curve, straight only at the ends onto the banks.
+- Two carriageways of one road (dual carriageway) that would otherwise **cross into an "X"** are merged into **one deck**; genuinely separate bridges stay two side by side.
+- **Pillars** under the bridge from 20 m length (~1 per 30 m), embedded into the terrain.
+- **Bridges crossing a patch border** read the neighbouring patch's terrain and water so they line up.
+
+**How to generate bridges:**
+1. Fill in Condor Directory, Landscape and the patch (Single or range) — same as for buildings.
+2. **Import to Blender ON + the `Import` button** → generates bridges for the patch/range straight into the scene as the `bridges` object.
+3. **File mode (Import to Blender OFF) + the `Batch` checkbox** → during Generate Buildings the bridges are written **directly into each patch's OBJ**: **LOD0 with railings, LOD1 without railings**. (The Import button is disabled in this mode.)
+
+The bridge appears in the generation log as the `bridges` object. The whole bridge feature lives in one removable file `blender/bridges.py`.
+
+---
+
 ## Object-to-texture mapping (TEXTURE_MAP)
 
 The plugin maintains an internal table that assigns each type of generated object its `.dds` texture file. This table is used when assigning materials in Blender and when writing the MTL file for Condor.
@@ -628,6 +656,7 @@ The plugin maintains an internal table that assigns each type of generated objec
 | `wind_turbine` | `WindTurbine.dds` | Wind turbines |
 | `chimney` | `Chimney.dds` | Chimneys |
 | `transmitter` | `transmitter.dds` | Communication transmitters (big and small share one material and texture) |
+| `bridges` | `Bridge.dds` | Road and rail bridges over rivers and valleys (deck, railings, pillars) |
 
 ### Which OSM tags belong to the INDUSTRIAL category
 

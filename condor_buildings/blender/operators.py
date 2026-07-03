@@ -854,6 +854,10 @@ class CONDOR_OT_import_buildings(Operator):
                     except Exception:
                         airports = []
                     def _mark(names):
+                        # Names come straight from the written OBJ. Tag 'pylones' as a
+                        # cable car ONLY when this patch ACTUALLY generated aerialways
+                        # (has_aerial = aerialway pylons > 0); a power-line-only patch
+                        # stays plain 'pylones'.
                         names = sorted(names)
                         if has_aerial:
                             names = [n + " (aerialway)" if n == 'pylones' else n for n in names]

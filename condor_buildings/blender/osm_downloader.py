@@ -571,6 +571,40 @@ def download_airports_for_patch(patch_metadata, autogen_dir):
     problem). The buildings/powerlines OSM download is not affected.
     """
     try:
+        patch_id = getattr(patch_metadata, "patch_id", None)
+        airport_dir = os.path.join(autogen_dir, "airport")
+        path = os.path.join(airport_dir, "airports.json")
+
+        # Load the existing shared file first so we can SKIP the (slow, often timing-out)
+        # online Overpass query for a patch that was already searched before. The list of
+        # searched patches is kept under the "__meta__" key (ignored by airports_in_patch,
+        # which only reads entries that have a "center").
+        existing = {}
+        if os.path.exists(path):
+            try:
+                with open(path, encoding='utf-8') as f:
+                    existing = json.load(f)
+            except Exception:
+                existing = {}
+        meta = existing.get("__meta__", {}) if isinstance(existing.get("__meta__"), dict) else {}
+        searched = list(meta.get("searched_patches", []))
+        # This patch sits in the CENTRE of its own 3x3 airport area. Work out those 9
+        # patch ids; the Overpass query is skipped ONLY when ALL 9 are already searched.
+        # If any is still missing (e.g. the 037 column / 025 row when 036024 is the
+        # centre) we must query so those get covered too - being a mere neighbour of an
+        # earlier search is NOT enough. patch_id is "XXXYYY" (px=first 3, py=last 3).
+        neigh_ids = [patch_id] if patch_id else []
+        if patch_id:
+            try:
+                px, py = int(patch_id[:3]), int(patch_id[3:])
+                neigh_ids = [f"{px + dx:03d}{py + dy:03d}"
+                             for dx in (-1, 0, 1) for dy in (-1, 0, 1)]
+            except Exception:
+                neigh_ids = [patch_id]
+        if patch_id and all(nid in searched for nid in neigh_ids):
+            logger.info("Airports: 3x3 around patch %s already searched -> skip Overpass", patch_id)
+            return True
+
         # 3x3 search area = patch CENTRE +/- 8640 m (half a patch 2880 + one full
         # patch 5760) on each side -> exactly 17280 m = 3 x 5760 m.
         clat = (patch_metadata.lat_min + patch_metadata.lat_max) / 2.0
@@ -582,33 +616,39 @@ def download_airports_for_patch(patch_metadata, autogen_dir):
             clat - dlat, clat + dlat, clon - dlon, clon + dlon,
         ))
         if content is None:
+            # a failed/timed-out fetch is NOT recorded, so it is retried next time
             return False
         found = _parse_airports(content)
-        if not found:
-            return True  # searched fine, just nothing there
 
-        airport_dir = os.path.join(autogen_dir, "airport")
         os.makedirs(airport_dir, exist_ok=True)
-        path = os.path.join(airport_dir, "airports.json")
-        existing = {}
-        if os.path.exists(path):
-            try:
-                with open(path, encoding='utf-8') as f:
-                    existing = json.load(f)
-            except Exception:
-                existing = {}
         changed = False
         # Priority: active runway > disused runway > aerodrome centroid fallback.
         _prio = {"aerodrome": 0, "runway_disused": 1, "runway": 2}
         for name, data in found.items():
+            data = dict(data)
+            if patch_id:
+                data["patch"] = patch_id       # patch this airport was found from
             old = existing.get(name)
             if old is None or _prio.get(data.get("source"), 0) > _prio.get(old.get("source"), 0):
                 existing[name] = data      # new airport, or a better source
                 changed = True
+        # The 3x3 query centred on this patch covered it AND its 8 neighbours, so mark
+        # all 9 as searched (even where no airport was found). That way the NEXT patch
+        # only has to search the strip it adds: e.g. after 036024 (which searches the
+        # 037 column) generating 037024 finds 036 + 037 already done and queries only
+        # the new 038 column (038023-038025).
+        if patch_id:
+            for nid in neigh_ids:
+                if nid not in searched:
+                    searched.append(nid)
+                    changed = True
+            meta["searched_patches"] = sorted(searched)
+            existing["__meta__"] = meta
         if changed:
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(existing, f, ensure_ascii=False, indent=2)
-            logger.info("Airports: %d in %s", len(existing), path)
+            n_air = sum(1 for k in existing if k != "__meta__")
+            logger.info("Airports: %d in %s (patch %s searched)", n_air, path, patch_id)
         return True
     except Exception as e:
         logger.warning("Airport search failed: %s", e)

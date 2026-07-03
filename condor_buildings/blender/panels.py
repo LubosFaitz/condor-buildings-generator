@@ -154,6 +154,13 @@ class CONDOR_PT_main_panel(Panel):
             except Exception:
                 pass
 
+            # --- BRIDGES add-on (removable: delete blender/bridges.py) ---
+            try:
+                from . import bridges
+                bridges.draw_panel(box, context)
+            except Exception:
+                pass
+
         # --- Import Button ---
         layout.separator()
 
