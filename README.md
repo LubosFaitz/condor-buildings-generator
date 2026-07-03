@@ -41,6 +41,18 @@ python -m condor_buildings.main \
 9. Set patch range (X/Y min/max) or enable single patch mode
 10. Click "Generate Buildings"
 
+**New in v0.9.6 — scenery objects update (v0.9.1 → v0.9.6):**
+- **Bridges** — road, motorway and railway bridges are built only where they actually cross **water or a valley** (pedestrian/cycle bridges ignored). Computed deck with railings and piers, `Bridge.dds` texture (rail / road / motorway stripes), a raised **arch** so a flat deck never sinks into flat terrain, the deck **follows curved OSM ways**, overlapping one-way carriageways are merged instead of crossing into an "X", and spans that reach into the neighbouring patch sample that patch's terrain + orthophoto. Available both as **Import** (into the scene) and **Batch** (written straight into `o<patch>.obj`: LOD0 with railings, LOD1 without). New module `blender/bridges.py`.
+- **Transmitters / masts** — `man_made=mast` / `tower` (communication) get `transmitter_small/big.obj`, Z-scaled to the OSM `height`, sharing one `condor_transmitter` material / `transmitter.dds`. New module `blender/transmitters.py`.
+- **Aerialways (cable cars / chair lifts)** — pylons + straight cables + hanging carriers (`Telecabine.obj` / `Aerialway_Cab.obj`) from OSM `aerialway=*`; pylon rollers tilt to the cable slope, border pylons sit on the neighbouring patch's terrain, and everything merges into the `pylones` object. New modules `io/aerialway_parser.py`, `generators/aerialway.py`.
+- **Aviation warning balls** — red/white marker spheres on the highest cable of a power line, placed by Annex-14-style rules near airports (aeroway detection, cross-patch `airport/airports.json`) and over deep valleys.
+- **Wind turbines & power lines reworked** — split turbine model (tower + rotor) with a randomised, deterministic blade spin; LOD0 and LOD1 built in a single pass; LOD1 uses low models (`turbine_low`, `pylon_large_low`) and drops cables/balls/small pylons.
+- **MSprint** — merges Microsoft Buildings footprints into the OSM data for denser coverage (`blender/msprint.py`).
+- **File-mode / export overhaul** — the "Import to Blender off" path now routes through Blender so exported roofs are correct (double-sided gabled, clean hipped) for LOD0 **and** LOD1; optional `.mtl` ("add MTL"), per-patch `o<patch>.log`, and a summary `generate_log.txt`.
+- **Chimneys** — batched straight into `o<patch>.obj`, model chosen by `material` / `height`, no more accidental "cylinder" building from `man_made=chimney`, optional `chimney.osm` injection.
+- **Overpass resilience** — three redundant Overpass servers, a shorter 60 s timeout for the small aeroway query, and a 3×3 patch cache in `airports.json` (grouped by X for readability) so repeated/failed airport queries no longer stall generation.
+- **English codebase** — remaining Czech comments and Blender user messages translated to English.
+
 **New in v0.9.0 — milestone release:**
 - **Stable build of the OSM → Condor building generator.** Consolidates the v0.8.x stabilization series into a single milestone: courtyard roofs open as holes, gable-end walls face outward, degenerate geometry is cleaned out of both the Blender mesh and the exported c3d, UV mapping is applied correctly, materials self-heal when their texture appears, and low-voltage power lines are filtered. The generator produces textured houses, apartment/commercial highrise, industrial, and flat-roofed buildings (gabled / hipped / polyskel / flat roofs) with Condor-ready OBJ + MTL output for LOD0 and LOD1. See the **Project Status** section below for the full capability list.
 
@@ -234,7 +246,11 @@ condor_buildings/
 │   ├── operators.py         # Import/clear operators with Condor workflow
 │   ├── panels.py            # UI panels (sidebar)
 │   ├── mesh_converter.py    # MeshData → Blender mesh conversion
-│   └── osm_downloader.py    # Download OSM data from Overpass API
+│   ├── osm_downloader.py    # Download OSM/aeroway data from Overpass API
+│   ├── batch_processing.py  # File-mode / batch export via Blender, chimneys, run logs
+│   ├── msprint.py           # Merge Microsoft Buildings footprints into the OSM data
+│   ├── transmitters.py      # Transmitter / mast module (man_made=mast/tower)
+│   └── bridges.py           # Bridges over water/valleys (road, motorway, rail)
 ├── models/
 │   ├── geometry.py          # Point2D, Point3D, Polygon, BBox
 │   ├── building.py          # BuildingRecord, BuildingCategory, RoofType
@@ -247,12 +263,15 @@ condor_buildings/
 │   ├── way_stitcher.py      # Multipolygon way stitching
 │   ├── terrain_loader.py    # Terrain OBJ loader
 │   ├── patch_metadata.py    # h*.txt header parser
-│   └── obj_exporter.py      # OBJ file export
+│   ├── obj_exporter.py      # OBJ file export
+│   ├── powerline_parser.py  # Power-line / airport-zone OSM parsing
+│   └── aerialway_parser.py  # Aerialway (cable car / chair lift) OSM parsing
 ├── processing/
 │   ├── footprint.py         # Footprint analysis, OBB, eligibility
 │   ├── spatial_index.py     # Grid-based spatial index for terrain
 │   ├── floor_z_solver.py    # Floor Z computation from terrain
-│   └── patch_filter.py      # Filter buildings outside patch bounds
+│   ├── patch_filter.py      # Filter buildings outside patch bounds
+│   └── mesh_grouper.py      # Group meshes by texture into Condor objects
 ├── bpypolyskel/             # Embedded straight skeleton library (GPL v3)
 │   ├── bpypolyskel.py       # Main algorithm
 │   ├── bpyeuclid.py         # 2D geometry primitives
@@ -264,11 +283,29 @@ condor_buildings/
 │   ├── roof_gabled.py       # Gabled roof generation (OBB-based)
 │   ├── roof_hipped.py       # Hipped roof generation (BLOSM analytical, 4 verts)
 │   ├── roof_polyskel.py     # Hipped roof generation (straight skeleton, >4 verts)
-│   └── uv_mapping.py        # UV coordinate generation for texture atlas
-└── utils/
-    ├── math_utils.py        # Mathematical utilities
-    ├── triangulation.py     # Polygon triangulation (ear clipping)
-    └── polygon_utils.py     # Polygon utilities (area, collinear removal)
+│   ├── uv_mapping.py        # UV coordinate generation for texture atlas
+│   ├── powerlines.py        # Power-line towers, cables, wind turbines, warning balls
+│   └── aerialway.py         # Aerialway pylons, cables and carriers
+├── utils/
+│   ├── math_utils.py        # Mathematical utilities
+│   ├── triangulation.py     # Polygon triangulation (ear clipping)
+│   └── polygon_utils.py     # Polygon utilities (area, collinear removal)
+├── Textures/                # Main wall/roof atlases, copied to Working/Autogen/Textures on generation
+│   ├── Houses_Atlas.dds
+│   ├── Highrise_Atlas.dds
+│   ├── Industrial_Atlas.dds
+│   └── Roof1.dds … Roof6.dds
+└── assets/                  # 3D models + textures for scenery objects (copied on generation)
+    ├── 3Dobjects/           # Chimneys, transmitters, Bridge.dds
+    │   ├── chimney_big.obj / chimney_small.obj (+ _low)
+    │   ├── transmitter_big.obj / transmitter_small.obj
+    │   └── Chimney.dds, transmitter.dds, Bridge.dds (+ .mtl)
+    └── pylons/              # Power lines, wind turbines, aerialways
+        ├── pylon_large/medium/small.obj (+ _low)
+        ├── turbine_tower.obj / turbine_blades.obj (+ _low)
+        ├── Pylon_Aerialway_ns/rollers.obj, Pylon_AerialCab_ns/rollers.obj (+ _low)
+        ├── Aerialway_Cab.obj, Telecabine.obj, WarningSphere.obj
+        └── Pylons.dds, WindTurbine.dds (+ .mtl)
 ```
 
 ### Data Flow
@@ -1302,7 +1339,13 @@ v0.9.0 is a stable release of the OSM → Condor building generator. From an Ope
 - Wall meshes with per-floor UV mapping against the facade atlases
 - Texture-based object grouping (houses, highrise/commercial walls, roofs, flat roofs, industrial) for efficient Condor rendering
 - Optional terrain orthophoto on merged flat roofs
-- Optional power-line towers (off by default)
+- Power lines and wind turbines (towers, cables, LOD0/LOD1 low models, aviation warning balls near airports/valleys)
+- Aerialways — cable cars and chair lifts (pylons, cables, carriers), merged into the `pylones` object
+- Transmitters / masts (`man_made=mast`/`tower`)
+- Bridges over water and valleys (road, motorway, rail) with railings, piers and `Bridge.dds`
+- Chimneys (`man_made=chimney`) baked into the patch OBJ, model chosen by material/height
+- MSprint — Microsoft Buildings footprints merged into the OSM data for denser coverage
+- Airport/aeroway detection cached per patch in `airport/airports.json` (Overpass, 3×3 area)
 
 **Output**
 
@@ -1398,6 +1441,12 @@ Condor 3D (x, y, z)
 | 0.8.13 | Jun 15, 2026 | Fixed degenerate house geometry that froze Blender's Edit Mode (Luboš Faitz). Vertex dedup in `MeshData.optimize()` merged sub-0.1 mm vertices but left faces referencing the same index twice → collapsed edges / corrupted faces. Now `optimize()` drops duplicate corners and < 3-vertex faces (keeping `face_uvs` parallel), `validate()` detects them, and the Blender converter calls `mesh.validate()` as a safety net. Cleans the Blender mesh *and* the exported OBJ/c3d. Patch 036019 had 16 such faces auto-removed; exported OBJs verified 0 duplicate-index faces across 036019 + 003023 (331k+ faces) |
 | 0.8.14 | Jun 16, 2026 | Two Luboš Faitz fixes. **(1) Courtyard roofs**: buildings with an inner courtyard got a solid roof; `triangulate_with_holes()` rewritten as a 3-strategy orchestrator (Blender `tessellate_polygon` → `mapbox_earcut` → legacy bridge), so non-convex city blocks open up instead of falling back to a solid roof; roof triangles forced +Z-up in `roof_flat.py`. **(2) UV regression from v0.8.13**: the safety-net `mesh.validate()` ran before UV mapping and (when it removed a degenerate face) mis-assigned UVs; `mesh_converter.py` now maps UVs *before* validate, and adds `_recalc_normals_outside()` (flat sheets → +Z, closed volumes → outward, idempotent so it keeps the v0.8.10 gable winding). Validated: 8/8 CLI triangulation checks + 9/9 Blender 5.x MCP checks |
 | 0.9.0 | Jun 16, 2026 | **Milestone release** — stable build of the OSM → Condor building generator. Consolidates the v0.8.x stabilization series (courtyard roofs open as holes, outward-facing gable walls, degenerate-geometry cleanup, correct UV mapping, material self-heal, low-voltage power-line filtering). Generates textured houses, highrise/commercial, industrial and flat-roof buildings (gabled / hipped / polyskel / flat) with Condor-ready OBJ + MTL for LOD0 + LOD1, from the CLI or the Blender addon |
+| 0.9.1 | ~Jun 18, 2026 | File-mode / export overhaul: "add MTL" replaces the object splitter; the "Import to Blender off" path routes through Blender so exported roofs are correct (double-sided gabled, clean hipped) for LOD0 + LOD1; per-patch `o<patch>.log` and a summary `generate_log.txt` (approximate version grouping) |
+| 0.9.2 | ~Jun 20, 2026 | Chimneys: batched straight into `o<patch>.obj` (LOD0 + LOD1), model chosen by `material` / `height`, no more accidental "cylinder" building from `man_made=chimney`, optional `chimney.osm` injection |
+| 0.9.3 | ~Jun 23, 2026 | Wind turbines & power lines reworked: split turbine model (tower + rotor) with randomised deterministic blade spin, LOD0/LOD1 in a single pass, low models (`turbine_low`, `pylon_large_low`), LOD1 = pylons only |
+| 0.9.4 | ~Jun 26, 2026 | Aviation warning balls on power lines + airport detection (`aeroway` added to Overpass, Annex-14-style placement rules, cross-patch `airport/airports.json`) |
+| 0.9.5 | ~Jun 29, 2026 | Aerialways (cable cars / chair lifts): pylons, cables and carriers; rollers tilt to the cable slope; border pylons use the neighbouring patch terrain; merged into the `pylones` object |
+| 0.9.6 | Jun 30 – Jul 3, 2026 | Transmitters / masts module; Bridges over water & valleys (railings, piers, `Bridge.dds`, arch, curved deck, "X"-merge, cross-patch); MSprint (Microsoft Buildings merge); airport search hardened (3 Overpass servers, 60 s aeroway timeout, 3×3 cache, `airports.json` grouped by X); codebase translated to English; version bump |
 
 ### Changelog Files
 
