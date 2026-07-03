@@ -1,6 +1,6 @@
 # Condor Buildings Generator
 
-[![Version](https://img.shields.io/badge/version-0.9.0-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
+[![Version](https://img.shields.io/badge/version-0.9.6-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org/)
 [![Blender](https://img.shields.io/badge/blender-4.0+-orange.svg)](https://www.blender.org/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
