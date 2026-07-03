@@ -614,8 +614,8 @@ def _align_parallel(specs):
 def _merge_crossing(specs):
     """After _span_water each carriageway of a road is stretched bank-to-bank on its
     OWN slightly different angle, so the two decks of one road end up crossing into an
-    'X'. Fuse SAME-TYPE road / motorway decks whose final spans actually CROSS or lie
-    ON TOP of each other into ONE deck centred on both. Decks that run side by side
+    'X'. Fuse SAME-TYPE road / motorway / rail decks whose final spans actually CROSS or
+    lie ON TOP of each other into ONE deck centred on both. Decks that run side by side
     WITH A GAP (they neither cross nor overlap) are left as two next to each other."""
     n = len(specs)
     info = []
@@ -628,7 +628,7 @@ def _merge_crossing(specs):
                      "mid": ((p0[0] + p1[0]) / 2.0, (p0[1] + p1[1]) / 2.0), "len": L})
 
     def deckish(i):
-        return specs[i].get("class", "road") in ("road", "motorway")
+        return specs[i].get("class", "road") in ("road", "motorway", "rail")
 
     parent = list(range(n))
 
@@ -687,6 +687,39 @@ def _merge_crossing(specs):
     return out
 
 
+def _cap_rail_width(specs):
+    """Cap the width of rail decks. One track = 5 m on the texture and the texture
+    holds 6 tracks, so a single deck is at most 30 m (width always a multiple of 5).
+    A wider track bundle (e.g. a station throat that got merged into one 108 m slab)
+    is replaced by at most TWO 30 m decks side by side (max 60 m) - never more.
+    Non-rail decks pass through unchanged."""
+    out = []
+    for sp in specs:
+        if sp.get("class") != "rail":
+            out.append(sp)
+            continue
+        wsnap = max(5.0, round(sp["width"] / 5.0) * 5.0)   # snap to whole tracks
+        if wsnap <= 30.0:
+            nb = dict(sp)
+            nb["width"] = wsnap
+            out.append(nb)
+            continue
+        # too wide -> two decks side by side, each <= 30 m and a multiple of 5
+        wd = min(30.0, max(5.0, round((wsnap / 2.0) / 5.0) * 5.0))
+        xy = sp["xy"]
+        p0, p1 = xy[0], xy[-1]
+        dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+        L = math.hypot(dx, dy) or 1.0
+        nx, ny = -dy / L, dx / L                            # unit normal across the deck
+        for s in (-0.5, 0.5):                               # two decks, centred +/- wd/2
+            off = s * wd
+            nb = dict(sp)
+            nb["width"] = wd
+            nb["xy"] = [(x + nx * off, y + ny * off) for (x, y) in xy]
+            out.append(nb)
+    return out
+
+
 def _build_bridges(bridges, waterways, z_at, is_water=None, railings=True):
     """Build merged (verts, faces). verts = [(x,y,z)], faces = [(i,j,k,l)/(i,j,k)]
     with 0-based indices. Returns (verts, faces, n_bridges, n_pillars).
@@ -739,6 +772,9 @@ def _build_bridges(bridges, waterways, z_at, is_water=None, railings=True):
 
     # length-align parallel decks (two bridges side by side get the same span)
     _align_parallel(specs)
+
+    # rail decks: max 6 tracks (30 m) per deck; a wider bundle -> at most two 30 m decks
+    specs = _cap_rail_width(specs)
 
     # Pass 2: build the deck geometry for each (aligned) span.
     for spec in specs:
