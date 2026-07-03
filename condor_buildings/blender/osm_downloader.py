@@ -8,6 +8,7 @@ Inspired by BLOSM (Blender-OSM) approach for on-the-fly OSM data retrieval.
 """
 
 import os
+import re
 import math
 import json
 import urllib.request
@@ -30,6 +31,10 @@ OVERPASS_SERVERS = [
 
 # Timeout for download (seconds)
 DOWNLOAD_TIMEOUT = 120
+
+# Shorter timeout for the (small, optional) airport/aeroway query so a slow or
+# overloaded Overpass server does not stall generation for the full 120 s.
+AIRPORT_TIMEOUT = 60
 
 # Maximum bbox area to prevent accidentally downloading too much data
 MAX_BBOX_AREA_DEG2 = 0.25  # ~25km x 25km at mid-latitudes
@@ -420,7 +425,7 @@ def _overpass_fetch(query, retry_count=2):
                 server, data=data,
                 headers={'User-Agent': 'CondorBuildings/0.4 (Blender addon)',
                          'Content-Type': 'application/x-www-form-urlencoded'})
-            with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT) as resp:
+            with urllib.request.urlopen(req, timeout=AIRPORT_TIMEOUT) as resp:
                 return resp.read()
         except Exception as e:
             logger.warning("Airport search: Overpass fetch failed (%s): %s", server, e)
@@ -645,8 +650,36 @@ def download_airports_for_patch(patch_metadata, autogen_dir):
             meta["searched_patches"] = sorted(searched)
             existing["__meta__"] = meta
         if changed:
+            # __meta__ (prohledané patche) nahoru; patche seskupené po X (první tři
+            # číslice) - každá skupina X na svém řádku vedle sebe; letiště pod tím
+            ordered = {}
+            if "__meta__" in existing:
+                ordered["__meta__"] = existing["__meta__"]
+            for k, v in existing.items():
+                if k != "__meta__":
+                    ordered[k] = v
+            patches = ordered.get("__meta__", {}).get("searched_patches", [])
+            rows = []
+            cur_x = None
+            for p in patches:
+                if p[:3] != cur_x:
+                    rows.append([])
+                    cur_x = p[:3]
+                rows[-1].append(p)
+            if rows:
+                patches_block = "[\n" + ",\n".join(
+                    "      " + ", ".join(json.dumps(p, ensure_ascii=False) for p in row)
+                    for row in rows) + "\n    ]"
+            else:
+                patches_block = "[]"
+            text = json.dumps(ordered, ensure_ascii=False, indent=2)
+            text = re.sub(
+                r'("searched_patches": )\[[^\]]*\]',
+                lambda m: m.group(1) + patches_block,
+                text,
+            )
             with open(path, 'w', encoding='utf-8') as f:
-                json.dump(existing, f, ensure_ascii=False, indent=2)
+                f.write(text)
             n_air = sum(1 for k in existing if k != "__meta__")
             logger.info("Airports: %d in %s (patch %s searched)", n_air, path, patch_id)
         return True
