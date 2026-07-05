@@ -514,18 +514,35 @@ class CONDOR_OT_import_transmitters(Operator):
                 ob.location = (cx, cy, foot_z)
                 placed.append(ob)
 
-                col_name = f"Condor_{props.landscape_name}_{patch_id}"
-                col = bpy.data.collections.get(col_name) or bpy.data.collections.new(col_name)
-                if col.name not in [c.name for c in context.scene.collection.children] and not col.users_scene:
-                    try: context.scene.collection.children.link(col)
-                    except Exception: pass
-                sub_name = f"transmitter_{model}_{patch_id}"
-                sub = bpy.data.collections.get(sub_name) or bpy.data.collections.new(sub_name)
-                if sub.name not in [c.name for c in col.children]:
-                    col.children.link(sub)
+                # unlink from any default collection; we place a copy into each LOD
                 for c in list(ob.users_collection):
                     c.objects.unlink(ob)
-                sub.objects.link(ob)
+
+                # which LODs to place into (transmitter model is the same in both)
+                lod_suffixes = []
+                if props.output_lod in ('LOD0', 'BOTH'):
+                    lod_suffixes.append("")
+                if props.output_lod in ('LOD1', 'BOTH'):
+                    lod_suffixes.append("_LOD1")
+                if not lod_suffixes:
+                    lod_suffixes.append("")
+
+                for li, suffix in enumerate(lod_suffixes):
+                    if li == 0:
+                        inst = ob
+                    else:
+                        inst = ob.copy()
+                        inst.data = ob.data.copy()   # vlastni mesh (ne sdileny) - jinak merge/transform_apply spadne na "multi user"
+                    col_name = f"Condor_{props.landscape_name}_{patch_id}{suffix}"
+                    col = bpy.data.collections.get(col_name) or bpy.data.collections.new(col_name)
+                    if col not in context.scene.collection.children_recursive:
+                        try: context.scene.collection.children.link(col)
+                        except Exception: pass
+                    sub_name = f"transmitter_{model}_{patch_id}{suffix}"
+                    sub = bpy.data.collections.get(sub_name) or bpy.data.collections.new(sub_name)
+                    if sub.name not in [c.name for c in col.children]:
+                        col.children.link(sub)
+                    sub.objects.link(inst)
                 total += 1
 
             if terrain_orig is not None and terrain_obj:
@@ -601,7 +618,7 @@ class CONDOR_OT_merge_transmitters(Operator):
 
         # clean empty transmitter_* sub-collections + duplicate materials
         for col in list(bpy.data.collections):
-            if _re.match(r'^transmitter_(big|small)_\d{6}$', col.name) and not col.objects:
+            if _re.match(r'^transmitter_(big|small)_\d{6}(_LOD1)?$', col.name) and not col.objects:
                 for parent in list(bpy.data.collections):
                     if col.name in [c.name for c in parent.children]:
                         parent.children.unlink(col)

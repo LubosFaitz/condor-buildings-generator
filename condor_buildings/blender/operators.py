@@ -2065,7 +2065,7 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
 
             existing_objects = set(bpy.data.objects)
 
-            import_axis = _detect_obj_forward_axis(obj_path)
+            import_axis = 'X'
             if bpy.app.version >= (4, 0, 0):
                 bpy.ops.wm.obj_import(
                     filepath=obj_path,

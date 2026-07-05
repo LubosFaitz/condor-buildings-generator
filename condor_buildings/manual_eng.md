@@ -600,9 +600,9 @@ The model is **uniformly scaled** to the height (keeps its shape), the base sits
 
 **Batch (checkbox)** — file mode only (Import to Blender off): after generating the OBJ, the transmitter is added into it as the object **`transmitter`** (material `condor_transmitter`, texture `transmitter.dds`). It is written **right before `pylones`**, so `pylones` stays the last object in the file, and it keeps the **model's own normals** (same shading as a manual import). Off by default.
 
-**Import** — imports the transmitters for the given patch. Before importing it deletes existing `Transmitter_{patch_id}_*` (to avoid `.001` duplicates), places the models on the terrain and puts them in the subcollections `transmitter_big_{patch_id}` / `transmitter_small_{patch_id}`.
+**Import** — imports the transmitters for the given patch. Before importing it deletes existing `Transmitter_{patch_id}_*` (to avoid `.001` duplicates), places the models on the terrain and puts them in the subcollections `transmitter_big_{patch_id}` / `transmitter_small_{patch_id}`. Following the **LOD Level** setting the transmitters go into the matching building collection(s): `Condor_{landscape}_{patch_id}` (LOD0) and/or `…_LOD1` (LOD1). With **Both LODs** the **same** transmitter is placed into both collections (the LOD1 copy has its own mesh); the LOD1 subcollection gets a `_LOD1` suffix.
 
-**Merge** — merges **all transmitters of the patch (big and small) into ONE object named `transmitter`** with the material `condor_transmitter`. Empty subcollections and duplicate materials are cleaned up.
+**Merge** — merges **all transmitters of the patch (big and small) into ONE object named `transmitter`** with the material `condor_transmitter` — separately per LOD collection, so **LOD0 and LOD1 are both merged in a single pass**. Empty subcollections (including the `_LOD1` ones) and duplicate materials are cleaned up.
 
 The whole transmitter feature lives in one removable file `blender/transmitters.py`.
 
@@ -629,7 +629,7 @@ The **Other objects** box also has a **Bridges** row with an **Import** button a
 
 **How to generate bridges:**
 1. Fill in Condor Directory, Landscape and the patch (Single or range) — same as for buildings.
-2. **Import to Blender ON + the `Import` button** → generates bridges for the patch/range straight into the scene as the `bridges` object.
+2. **Import to Blender ON + the `Import` button** → generates bridges for the patch/range straight into the scene as the `bridges` object. Following the **LOD Level** setting: **LOD0 → collection `Condor_{landscape}_{patch_id}`, with railings; LOD1 → `…_LOD1`, without railings**; Both LODs builds both. The object is named `bridges` in every collection (the LOD is given by the collection, not the name).
 3. **File mode (Import to Blender OFF) + the `Batch` checkbox** → during Generate Buildings the bridges are written **directly into each patch's OBJ**: **LOD0 with railings, LOD1 without railings**. (The Import button is disabled in this mode.)
 
 The bridge appears in the generation log as the `bridges` object. The whole bridge feature lives in one removable file `blender/bridges.py`.

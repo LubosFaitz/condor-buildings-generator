@@ -1117,49 +1117,62 @@ class CONDOR_OT_import_bridges(Operator):
             z_at, is_water = _cross_patch_samplers(
                 patch_id, paths['heightmaps'], texture_dirs,
                 _make_terrain_z(terrain), is_water)
-            verts, faces, uvs, nb, npil, nsk = _build_bridges(
-                bridges, waterways, z_at, is_water)
-            total_skipped += nsk
-            if not verts or nb == 0:
-                continue
+            # Which LODs to build into (same pattern as chimneys):
+            #   LOD0 -> "" collection, WITH railings; LOD1 -> "_LOD1", WITHOUT railings.
+            lod_variants = []
+            if props.output_lod in ('LOD0', 'BOTH'):
+                lod_variants.append(("", True))
+            if props.output_lod in ('LOD1', 'BOTH'):
+                lod_variants.append(("_LOD1", False))
+            if not lod_variants:
+                lod_variants.append(("", True))
 
-            # remove a previous 'bridges' object of THIS patch (matched by the stored
-            # patch_id, so re-importing the same patch replaces it instead of piling up)
-            for o in list(bpy.data.objects):
-                if o.name.startswith("bridges") and o.get("patch_id") == patch_id:
-                    bpy.data.objects.remove(o, do_unlink=True)
+            for vi, (suffix, railings) in enumerate(lod_variants):
+                verts, faces, uvs, nb, npil, nsk = _build_bridges(
+                    bridges, waterways, z_at, is_water, railings)
+                if vi == 0:
+                    total_skipped += nsk
+                    total_bridges += nb
+                    total_pillars += npil
+                if not verts or nb == 0:
+                    continue
 
-            mesh = bpy.data.meshes.new("bridges")
-            mesh.from_pydata([tuple(v) for v in verts], [], [list(f) for f in faces])
-            mesh.update()
-            # UV layer so the deck can be textured (U across 0..1, V tiled per segment)
-            if uvs:
-                uvl = mesh.uv_layers.new(name="UVMap")
-                for loop in mesh.loops:
-                    uvl.data[loop.index].uv = uvs[loop.vertex_index]
-            ob = bpy.data.objects.new("bridges", mesh)
-            ob["patch_id"] = patch_id
-            ob.data.materials.append(_get_material())
+                obj_name = "bridges"   # stejny nazev v obou LOD (LOD urcuje kolekce); Blender da LOD1 pripadne .001
+                # remove a previous bridges object of THIS patch + THIS LOD (replace, not pile up)
+                for o in list(bpy.data.objects):
+                    if (o.name.startswith("bridges") and o.get("patch_id") == patch_id
+                            and o.get("lod", "") == suffix):
+                        bpy.data.objects.remove(o, do_unlink=True)
 
-            # patch offset (same layout the buildings import uses)
-            px, py = int(patch_id[:3]), int(patch_id[3:])
-            if not props.single_patch_mode:
-                ob.location = (-(px - props.patch_x_min) * PATCH_SIZE,
-                               (py - props.patch_y_min) * PATCH_SIZE, 0.0)
+                mesh = bpy.data.meshes.new(obj_name)
+                mesh.from_pydata([tuple(v) for v in verts], [], [list(f) for f in faces])
+                mesh.update()
+                # UV layer so the deck can be textured (U across 0..1, V tiled per segment)
+                if uvs:
+                    uvl = mesh.uv_layers.new(name="UVMap")
+                    for loop in mesh.loops:
+                        uvl.data[loop.index].uv = uvs[loop.vertex_index]
+                ob = bpy.data.objects.new(obj_name, mesh)
+                ob["patch_id"] = patch_id
+                ob["lod"] = suffix
+                ob.data.materials.append(_get_material())
 
-            col_name = f"Condor_{props.landscape_name}_{patch_id}"
-            col = bpy.data.collections.get(col_name)
-            if col is None:
-                # brand-new collection -> link it under the scene once
-                col = bpy.data.collections.new(col_name)
-                try:
-                    context.scene.collection.children.link(col)
-                except Exception:
-                    pass
-            col.objects.link(ob)
+                # patch offset (same layout the buildings import uses)
+                px, py = int(patch_id[:3]), int(patch_id[3:])
+                if not props.single_patch_mode:
+                    ob.location = (-(px - props.patch_x_min) * PATCH_SIZE,
+                                   (py - props.patch_y_min) * PATCH_SIZE, 0.0)
 
-            total_bridges += nb
-            total_pillars += npil
+                col_name = f"Condor_{props.landscape_name}_{patch_id}{suffix}"
+                col = bpy.data.collections.get(col_name)
+                if col is None:
+                    # brand-new collection -> link it under the scene once
+                    col = bpy.data.collections.new(col_name)
+                    try:
+                        context.scene.collection.children.link(col)
+                    except Exception:
+                        pass
+                col.objects.link(ob)
 
         # copy Bridge.dds into Working/Autogen/Textures so Condor (and a re-import of
         # the OBJ) finds it - same as the Batch/file-mode path already does
