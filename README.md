@@ -1,6 +1,6 @@
 # Condor Buildings Generator
 
-[![Version](https://img.shields.io/badge/version-0.9.6-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
+[![Version](https://img.shields.io/badge/version-0.9.8-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org/)
 [![Blender](https://img.shields.io/badge/blender-4.0+-orange.svg)](https://www.blender.org/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
@@ -40,6 +40,23 @@ python -m condor_buildings.main \
 8. Select a landscape from the dropdown
 9. Set patch range (X/Y min/max) or enable single patch mode
 10. Click "Generate Buildings"
+
+**New in v0.9.8 — solar farms (optional, single patch only):**
+- **Solar farms** — a new **Solar** row in *Other objects* builds **ground** solar farms (no rooftop panels) as tilted, textured panels on posts (`solar.dds`, material `condor_solar`). New removable module `blender/solar.py`.
+- ⚠️ **Single patch only, and semi-automatic — you decide whether to use it.** OSM only contains the **outline of the whole plant**, not the individual panel rows, so the panel layout is read from an **ESRI World Imagery** photo: a black/white **panel mask** is built from it and every connected row in the mask becomes one panel (each row using its own direction). **Sometimes the automatic mask is good and the farm generates nicely; other times you have to fix the mask by hand.** That is why the feature is optional and the workflow is left to the user.
+- **Manual mask fix** — **Mask on terrain** lays the mask flat on the terrain (red = panels) over the Condor texture; move/rotate it in top view onto the real panels and press **Save mask**, then **Import** rebuilds exactly from it. You can also repaint `esri_mask.jpg` in an image editor (open `esri_sat.jpg`, draw the panels black, save as `esri_mask.jpg`) — an existing mask is used and never overwritten.
+- **Per-farm objects, Flip, Merge, LOD** — each plant is a separate `Solar_<patch>_n` object (so you can **Flip** one farm's tilt/posts on its own); **Merge** joins them into `solar_farm`. LOD0 → with posts, LOD1 → without posts, Both LODs → both collections.
+- **Cache** — tiles + `esri_sat/mask/overlay/poly.jpg` go to `Working/Autogen/condor_esri_cache/<patch>/`; the raw tiles are deleted after a successful import. ⚠️ **Generate Buildings clears the whole patch collection**, so build the solars **after** the buildings.
+- **Texture** — `solar.dds` ships in `assets/3Dobjects/` and is copied automatically into `Working/Autogen/Textures/` on import (skipped if already there), like `Bridge.dds`; the exporter writes the `condor_solar` material + `solar.dds` into the MTL. In the OBJ, `solar_farm` is written before `wind_turbine` / `transmitter` / `pylones` (`pylones` stays last).
+- **"single" checkbox removed** — a missing `map_<patch>.osm` is now **always** downloaded automatically for chimneys / bridges / transmitters / solar.
+
+**New in v0.9.7 — bridges crossings, cleanup buttons & duplicate-safe import:**
+- **Bridges over motorway crossings (overpasses)** — besides water and valleys, a bridge is now built for a **grade separation that involves a motorway** (motorway over road/rail/motorway, or road/rail over a motorway). Road×road / road×rail / rail×rail (yards, stations) are skipped. The OSM download automatically also fetches **rivers** and **ground (non-bridge) motorways/roads/rails** for crossing detection.
+- **Bridge decks & pillars refined** — two ~parallel decks that stack (dual carriageway / "V" ramps) collapse to one; a bowed-up **overpass gets no pillars** (a pier would land on the road below), a bowed-up **river bridge gets exactly 2 pillars** at 1/3 and 2/3.
+- **Duplicate-safe imports** — Import Patch / Bridges / Chimneys / Transmitters no longer create duplicates: an object type already present for a patch+LOD (imported separately **or baked into the OBJ**) isn't added again; Import Patch drops OBJ-baked extras that already exist separately. Import Patch OBJ axis is now always `forward=X, up=Z` (header ignored) so c3d-derived OBJs import upright.
+- **Two trash buttons** — a **terrain** trash (next to Export Terrain and next to the range *terrain* checkbox) removes patch terrain objects from the scene; an **OSM files** trash (under MSprint) deletes `map_<patch>.osm` (+ `.ori` + MSprint copy). Both work in Single Patch and Range.
+- **"single" checkbox** (next to *Other objects*) — lets chimneys/bridges/transmitters download a missing OSM on demand; otherwise missing-OSM patches are reported and skipped.
+- **Merge Chimneys** now enables only for freshly-imported `Chimney_...` objects (like Merge Transmitters) — OBJ-baked/merged chimneys don't light it.
 
 **New in v0.9.6 — scenery objects update (v0.9.1 → v0.9.6):**
 - **Bridges** — road, motorway and railway bridges are built only where they actually cross **water or a valley** (pedestrian/cycle bridges ignored). Computed deck with railings and piers, `Bridge.dds` texture (rail / road / motorway stripes), a raised **arch** so a flat deck never sinks into flat terrain, the deck **follows curved OSM ways**, overlapping one-way carriageways are merged instead of crossing into an "X", and spans that reach into the neighbouring patch sample that patch's terrain + orthophoto. Available both as **Import** (into the scene) and **Batch** (written straight into `o<patch>.obj`: LOD0 with railings, LOD1 without). New module `blender/bridges.py`.
@@ -250,7 +267,8 @@ condor_buildings/
 │   ├── batch_processing.py  # File-mode / batch export via Blender, chimneys, run logs
 │   ├── msprint.py           # Merge Microsoft Buildings footprints into the OSM data
 │   ├── transmitters.py      # Transmitter / mast module (man_made=mast/tower)
-│   └── bridges.py           # Bridges over water/valleys (road, motorway, rail)
+│   ├── bridges.py           # Bridges over water/valleys (road, motorway, rail)
+│   └── solar.py             # Ground solar farms from OSM + ESRI imagery mask (single patch)
 ├── models/
 │   ├── geometry.py          # Point2D, Point3D, Polygon, BBox
 │   ├── building.py          # BuildingRecord, BuildingCategory, RoofType
@@ -1342,7 +1360,7 @@ v0.9.0 is a stable release of the OSM → Condor building generator. From an Ope
 - Power lines and wind turbines (towers, cables, LOD0/LOD1 low models, aviation warning balls near airports/valleys)
 - Aerialways — cable cars and chair lifts (pylons, cables, carriers), merged into the `pylones` object
 - Transmitters / masts (`man_made=mast`/`tower`)
-- Bridges over water and valleys (road, motorway, rail) with railings, piers and `Bridge.dds`
+- Bridges over water, valleys and motorway crossings/overpasses (road, motorway, rail) with railings, piers and `Bridge.dds`
 - Chimneys (`man_made=chimney`) baked into the patch OBJ, model chosen by material/height
 - MSprint — Microsoft Buildings footprints merged into the OSM data for denser coverage
 - Airport/aeroway detection cached per patch in `airport/airports.json` (Overpass, 3×3 area)
@@ -1447,6 +1465,7 @@ Condor 3D (x, y, z)
 | 0.9.4 | ~Jun 26, 2026 | Aviation warning balls on power lines + airport detection (`aeroway` added to Overpass, Annex-14-style placement rules, cross-patch `airport/airports.json`) |
 | 0.9.5 | ~Jun 29, 2026 | Aerialways (cable cars / chair lifts): pylons, cables and carriers; rollers tilt to the cable slope; border pylons use the neighbouring patch terrain; merged into the `pylones` object |
 | 0.9.6 | Jun 30 – Jul 3, 2026 | Transmitters / masts module; Bridges over water & valleys (railings, piers, `Bridge.dds`, arch, curved deck, "X"-merge, cross-patch); MSprint (Microsoft Buildings merge); airport search hardened (3 Overpass servers, 60 s aeroway timeout, 3×3 cache, `airports.json` grouped by X); codebase translated to English; version bump |
+| 0.9.7 | Jul 8, 2026 | Bridges also over **motorway crossings/overpasses** (only when a motorway is involved; ground roads/rails auto-fetched); overlapping decks collapse to one; pillars: overpass → none, river → 2 at thirds. **Duplicate-safe imports** (Import Patch / Bridges / Chimneys / Transmitters skip what's already present per patch+LOD, incl. OBJ-baked; Import Patch OBJ axis always X,Z). **Terrain** & **OSM files** trash buttons (Single + Range). **"single"** checkbox to fetch a missing OSM on demand. Merge Chimneys enables only for freshly-imported `Chimney_...` (like transmitters) |
 
 ### Changelog Files
 
