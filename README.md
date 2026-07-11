@@ -312,10 +312,10 @@ condor_buildings/
 │   ├── Industrial_Atlas.dds
 │   └── Roof1.dds … Roof6.dds
 └── assets/                  # 3D models + textures for scenery objects (copied on generation)
-    ├── 3Dobjects/           # Chimneys, transmitters, Bridge.dds
+    ├── 3Dobjects/           # Chimneys, transmitters, Bridge.dds, solar.dds
     │   ├── chimney_big.obj / chimney_small.obj (+ _low)
     │   ├── transmitter_big.obj / transmitter_small.obj
-    │   └── Chimney.dds, transmitter.dds, Bridge.dds (+ .mtl)
+    │   └── Chimney.dds, transmitter.dds, Bridge.dds, solar.dds (+ .mtl)
     └── pylons/              # Power lines, wind turbines, aerialways
         ├── pylon_large/medium/small.obj (+ _low)
         ├── turbine_tower.obj / turbine_blades.obj (+ _low)
@@ -1360,6 +1360,7 @@ v0.9.0 is a stable release of the OSM → Condor building generator. From an Ope
 - Transmitters / masts (`man_made=mast`/`tower`)
 - Bridges over water, valleys and motorway crossings/overpasses (road, motorway, rail) with railings, piers and `Bridge.dds`
 - Chimneys (`man_made=chimney`) baked into the patch OBJ, model chosen by material/height
+- Ground solar farms (`power=plant|generator` + `source=solar`, ways and multipolygon relations) — tilted panels on posts built from an ESRI-imagery panel mask, `solar.dds` / `condor_solar`; **single patch only, optional/semi-automatic** (the mask can be fixed by hand)
 - MSprint — Microsoft Buildings footprints merged into the OSM data for denser coverage
 - Airport/aeroway detection cached per patch in `airport/airports.json` (Overpass, 3×3 area)
 
@@ -1464,6 +1465,7 @@ Condor 3D (x, y, z)
 | 0.9.5 | ~Jun 29, 2026 | Aerialways (cable cars / chair lifts): pylons, cables and carriers; rollers tilt to the cable slope; border pylons use the neighbouring patch terrain; merged into the `pylones` object |
 | 0.9.6 | Jun 30 – Jul 3, 2026 | Transmitters / masts module; Bridges over water & valleys (railings, piers, `Bridge.dds`, arch, curved deck, "X"-merge, cross-patch); MSprint (Microsoft Buildings merge); airport search hardened (3 Overpass servers, 60 s aeroway timeout, 3×3 cache, `airports.json` grouped by X); codebase translated to English; version bump |
 | 0.9.7 | Jul 8, 2026 | Bridges also over **motorway crossings/overpasses** (only when a motorway is involved; ground roads/rails auto-fetched); overlapping decks collapse to one; pillars: overpass → none, river → 2 at thirds. **Duplicate-safe imports** (Import Patch / Bridges / Chimneys / Transmitters skip what's already present per patch+LOD, incl. OBJ-baked; Import Patch OBJ axis always X,Z). **Terrain** & **OSM files** trash buttons (Single + Range). **"single"** checkbox to fetch a missing OSM on demand. Merge Chimneys enables only for freshly-imported `Chimney_...` (like transmitters) |
+| 0.9.8 | Jul 11, 2026 | **Solar farms** (new removable module `blender/solar.py`, **single patch only**, optional/semi-automatic): ground farms from the OSM outline (ways **and multipolygon relations**) + an **ESRI World Imagery** panel mask — each connected mask row becomes one tilted, textured panel on posts (`solar.dds`, material `condor_solar`), every row using its own direction. **Manual mask fix**: *Mask on terrain* (move/rotate the mask over the Condor texture) + *Save mask*, or repaint `esri_mask.jpg` by hand — an existing mask is used and never overwritten. Per-farm objects `Solar_<patch>_n` with **Flip** (tilt + posts) and **Merge** → `solar_farm`. **LOD0 = with posts, LOD1 = without**, Both LODs → both collections. Cache + debug JPEGs in `Working/Autogen/condor_esri_cache/<patch>/` (raw tiles deleted after import); `solar.dds` auto-copied to `Autogen/Textures`. Missing `map_<patch>.osm` is now **always** downloaded automatically (the "single" checkbox was removed) |
 
 ### Changelog Files
 
