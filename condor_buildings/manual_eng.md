@@ -82,7 +82,9 @@ Searches for building files in `Working/Autogen/`:
 
 If neither file exists → the viewport is set up and a warning is shown. The operation ends.
 
-Each imported OBJ goes into its own collection. If the collection does not exist yet, it is created. OBJ is imported with axes `forward=X, up=Z`.
+Each imported OBJ goes into its own collection. If the collection does not exist yet, it is created. OBJ is imported with axes **`forward=X, up=Z` always** (the OBJ header is ignored) — matching Export Condor OBJ+MTL (which bakes the Condor axis swap) and OBJs converted from `.c3d` in an external editor (which don't write a header).
+
+**No duplicate import:** if the patch's building collection already has buildings, that LOD is skipped (no re-import). Bridges/chimneys/transmitters baked into the OBJ that you already imported separately are dropped after import, so each stays once. LOD0 and LOD1 are treated as separate.
 
 After import the plugin fixes material names: if an object's name is in the internal texture map, the material is renamed to `condor_{object_name}`. This prevents duplicates and ensures textures are linked correctly.
 
@@ -117,6 +119,8 @@ Exports the terrain object from the scene back to an OBJ file.
 
 The `modified` folder is created automatically if it does not exist. The export uses axes `forward=Y, up=Z`, exports a triangulated mesh, normals, UV maps, and materials. On the next import the plugin always prefers the file from `modified` over the original.
 
+**Trash button (next to Export Terrain):** removes this patch's terrain **object** from the scene (`TR3{patch_id}` in the `Patch_Terrain` collection). It does not delete the file on disk. Works in Single Patch and Range (range removes the terrain objects of the whole range).
+
 ---
 
 ## Mode: Range (toggle disabled)
@@ -128,7 +132,7 @@ A coordinate range for patches is entered using four fields:
 The plugin displays the total number of patches to be processed (e.g. "Patches: 6 (2×3)").
 
 ### terrain checkbox
-Visible only in range mode. When checked, terrain is imported for each patch in the range (see the procedure below).
+Visible only in range mode. When checked, terrain is imported for each patch in the range (see the procedure below). Next to it is a **trash** button (labelled *patch terrain*) that removes the terrain **objects** of the whole range from the scene (`TR3{patch_id}`), leaving files on disk.
 
 ### Import Patch button (Range mode)
 
@@ -159,6 +163,8 @@ Imports building OBJ files and optionally terrain for all patches in the specifi
    - `o{patch_id}_LOD1.obj` → imported into collection `Condor_{landscape}_{patch_id}_LOD1`
 
    If neither file exists → a warning is logged for this patch and the next patch is processed. Other patches continue normally.
+
+   **No duplicate import:** a patch/LOD whose collection already has buildings is skipped; bridges/chimneys/transmitters baked in the OBJ that already exist separately are dropped. OBJ axes are always `forward=X, up=Z` (header ignored), same as Single Patch.
 
    After import, material names are fixed to `condor_*` variants.
 
@@ -203,6 +209,9 @@ When checked, the plugin adds missing buildings from Microsoft Global Building F
 - Downloads compressed GZ files with buildings for the area (once; then cached locally)
 - Adds Microsoft buildings that are missing from OSM
 - Merges the result (OSM + Microsoft) into one file and uses it for generation
+
+### OSM files (trash button)
+Below MSprint there is a small **trash** button labelled **OSM files**. It deletes this patch's OSM files from `Working/Autogen`: `map_{patch_id}.osm`, its `…osm.ori` backup, and the MSprint copy `Working/Autogen/MSprint/map_{patch_id}.osm` (whatever exists). Works in Single Patch and Range (range deletes the files for the whole range). Handy because *Download* reuses an existing `map_{patch_id}.osm` — delete it to force a fresh download.
 
 ---
 
@@ -527,7 +536,13 @@ All conditions must be met simultaneously. If any one is not met, the building g
 
 ## Other objects (collapsible section below Powerlines)
 
-This is not a separate subpanel at the bottom but a **collapsible box right below the Powerlines box** (expand/collapse with the arrow). When more than 2 collections are imported, the Outliner is also collapsed automatically so it doesn't get cluttered. The section is a container for extra objects — chimneys for now, more may be added.
+This is not a separate subpanel at the bottom but a **collapsible box right below the Powerlines box** (expand/collapse with the arrow). When more than 2 collections are imported, the Outliner is also collapsed automatically so it doesn't get cluttered. The section is a container for extra objects — chimneys, transmitters, bridges.
+
+### Missing OSM is downloaded automatically
+Chimneys / bridges / transmitters / solar read `map_{patch_id}.osm`; if it is missing for a patch the import **downloads it first automatically** (only when it's missing) and then builds the objects — so they can be made even for patches where buildings were never generated. Needs internet. (The former "single" checkbox next to the *Other objects* header was removed — the missing-OSM download is now always on.)
+
+### No duplicate imports
+Import Chimneys / Transmitters / Bridges and Import Patch don't create duplicates: an object type that is already in a patch's collection (whether imported separately **or baked into the patch OBJ**) is not added again — the key is **patch + LOD** (LOD0 and LOD1 may both exist). Import Patch additionally drops bridges/chimneys/transmitters baked in the OBJ if you already imported them separately, so each stays **once**.
 
 ### Optional chimney source: chimney.osm
 If a file `chimney.osm` (or `Chimney.osm`) exists in `Working/Autogen`, the plugin pulls the chimneys belonging to the patch out of it before generating chimneys and adds them into `map_{patch_id}.osm` (read streamed; duplicate IDs are skipped). Those chimneys are then generated just like the ones from the main OSM. If the file isn't there, nothing changes and everything works as before.
@@ -543,7 +558,7 @@ Imports chimneys for the patch entered in Patch ID. Works in both modes (Single 
 1. Reads the OSM file `map_{patch_id}.osm` from `Working/Autogen/`. If the file does not exist, the patch is skipped.
 2. Reads metadata from `h{patch_id}.txt` (coordinate projection). If missing, the patch is skipped.
 3. Checks terrain availability — looks for `Working/Heightmaps/modified/h{patch_id}.obj`, otherwise `Working/Heightmaps/h{patch_id}.obj`. If terrain does not exist, the patch is skipped.
-4. Deletes all existing `Chimney_{patch_id}_*` objects from the scene and memory to prevent duplicates on repeated import.
+4. Skips a patch+LOD whose collection already contains a chimney (separately imported **or baked into the patch OBJ**), so nothing is duplicated. If the OSM is missing and the **single** checkbox is on, it downloads the OSM first.
 5. Reads chimneys from OSM data:
    - **Nodes** with tag `man_made=chimney` — reads coordinates and height from the `height` tag (default 30 m)
    - **Polygons (way)** with tag `man_made=chimney` — calculates the centroid, reads height
@@ -568,6 +583,8 @@ Imports chimneys for the patch entered in Patch ID. Works in both modes (Single 
 
 ### Chimneys — Merge
 Merges all chimneys of the current patch into a single object ready for Condor export.
+
+**When the button is enabled:** only while freshly-imported chimneys named `Chimney_...` exist (same rule as transmitters — `startswith("chimney_")`). Chimneys **baked into a patch OBJ** (`chimney.003`) or an already-merged `chimney` do **not** enable it, so importing patches doesn't light the button and a merged chimney doesn't re-trigger it.
 
 **Step-by-step:**
 
@@ -600,7 +617,7 @@ The model is **uniformly scaled** to the height (keeps its shape), the base sits
 
 **Batch (checkbox)** — file mode only (Import to Blender off): after generating the OBJ, the transmitter is added into it as the object **`transmitter`** (material `condor_transmitter`, texture `transmitter.dds`). It is written **right before `pylones`**, so `pylones` stays the last object in the file, and it keeps the **model's own normals** (same shading as a manual import). Off by default.
 
-**Import** — imports the transmitters for the given patch. Before importing it deletes existing `Transmitter_{patch_id}_*` (to avoid `.001` duplicates), places the models on the terrain and puts them in the subcollections `transmitter_big_{patch_id}` / `transmitter_small_{patch_id}`. Following the **LOD Level** setting the transmitters go into the matching building collection(s): `Condor_{landscape}_{patch_id}` (LOD0) and/or `…_LOD1` (LOD1). With **Both LODs** the **same** transmitter is placed into both collections (the LOD1 copy has its own mesh); the LOD1 subcollection gets a `_LOD1` suffix.
+**Import** — imports the transmitters for the given patch. It **skips a LOD whose patch collection already has a transmitter** (separately imported **or baked into the OBJ**), so nothing is duplicated (with *Both LODs* only the missing LOD is added). It places the models on the terrain and puts them in the subcollections `transmitter_big_{patch_id}` / `transmitter_small_{patch_id}`. Following the **LOD Level** setting the transmitters go into the matching building collection(s): `Condor_{landscape}_{patch_id}` (LOD0) and/or `…_LOD1` (LOD1). With **Both LODs** the **same** transmitter is placed into both collections (the LOD1 copy has its own mesh); the LOD1 subcollection gets a `_LOD1` suffix.
 
 **Merge** — merges **all transmitters of the patch (big and small) into ONE object named `transmitter`** with the material `condor_transmitter` — separately per LOD collection, so **LOD0 and LOD1 are both merged in a single pass**. Empty subcollections (including the `_LOD1` ones) and duplicate materials are cleaned up.
 
@@ -610,7 +627,7 @@ The whole transmitter feature lives in one removable file `blender/transmitters.
 
 ### Bridges — in the Other objects section
 
-The **Other objects** box also has a **Bridges** row with an **Import** button and a **Batch** checkbox. It generates road and rail bridges over **rivers and valleys** as a single object **`bridges`** (deck + railings + pillars) with the `Bridge.dds` texture (material `condor_bridge`).
+The **Other objects** box also has a **Bridges** row with an **Import** button and a **Batch** checkbox. It generates road and rail bridges over **rivers, valleys and motorway crossings (overpasses)** as a single object **`bridges`** (deck + railings + pillars) with the `Bridge.dds` texture (material `condor_bridge`).
 
 **What is built** (from OSM ways tagged `bridge=*`):
 - **Roads** (`highway=*`) — a deck 7 m of carriageway + 2× footpath = 11 m.
@@ -618,14 +635,20 @@ The **Other objects** box also has a **Bridges** row with an **Import** button a
 - **Railways** (`railway`) — 5 m per track; a multi-track line is merged into one wide deck.
 - Skipped: footways/cycleways, trams, and bridges **shorter than 20 m**.
 
-**Build condition:** a bridge is only built where it crosses **water** (from the orthophoto alpha channel of `t{patch_id}.dds`) or a **valley**. Water is downloaded together with the OSM — rivers (`waterway=*`) are added to the query automatically.
+**Build condition:** a bridge is built where it crosses **water** (orthophoto alpha of `t{patch_id}.dds`), a **valley**, OR it is a **grade-separated crossing (overpass) that involves a motorway** — i.e. a motorway over a road/rail/motorway, or a road/rail over a motorway. Road×road, road×rail and rail×rail crossings (typical in yards/stations) are **not** built. To detect crossings the OSM download automatically also fetches **rivers** and the **ground (non-bridge) motorways / roads / rails** (service and farm tracks are excluded).
 
 **Deck properties:**
-- The deck **bows into an arch** — mid-span sits ~5 m above the water surface.
-- A **curved bridge follows the road's path** — over the water the deck follows the curve, straight only at the ends onto the banks.
-- Two carriageways of one road (dual carriageway) that would otherwise **cross into an "X"** are merged into **one deck**; genuinely separate bridges stay two side by side.
-- **Pillars** under the bridge from 20 m length (~1 per 30 m), embedded into the terrain.
+- The deck **bows into an arch** — mid-span sits ~5 m above the water/road below.
+- A **curved bridge follows the road's path** — straight only at the ends onto the banks.
+- **Overlapping decks are reduced to one:** two ~parallel decks that sit on top of each other (dual carriageway, or ramps fanning into a "V") keep only the longer one; a real crossing at an angle and decks side by side with a gap stay separate.
+- **Pillars** depend on how the arched deck sits:
+  - bowed-up **overpass over a road/motorway/rail → NO pillars** (a pier would land on the road below),
+  - bowed-up **over a river → exactly 2 pillars** at 1/3 and 2/3 (none in the middle),
+  - otherwise (follows terrain / dry valley) → ~1 pillar per 30 m.
 - **Bridges crossing a patch border** read the neighbouring patch's terrain and water so they line up.
+- **If the OSM is missing for a patch**, the bridge import downloads it first automatically (needs internet).
+
+**Note:** re-importing a patch/LOD that already has bridges is skipped (no duplicate), and bridges baked into a patch OBJ are not duplicated by a separate Import.
 
 **How to generate bridges:**
 1. Fill in Condor Directory, Landscape and the patch (Single or range) — same as for buildings.
@@ -633,6 +656,38 @@ The **Other objects** box also has a **Bridges** row with an **Import** button a
 3. **File mode (Import to Blender OFF) + the `Batch` checkbox** → during Generate Buildings the bridges are written **directly into each patch's OBJ**: **LOD0 with railings, LOD1 without railings**. (The Import button is disabled in this mode.)
 
 The bridge appears in the generation log as the `bridges` object. The whole bridge feature lives in one removable file `blender/bridges.py`.
+
+---
+
+## Solar farms — in the Other objects section
+
+> ⚠️ **Single patch only** and it is an **optional, semi-automatic feature** — decide for yourself whether you want to use it. Sometimes the plugin builds the panel mask automatically well and the farm generates nicely; **other times the mask has to be fixed by hand**, because **OSM only contains the outline of the whole plant**, not the individual panel rows. So the whole workflow is up to the user (whether you want the solar farms at all, whether you want to edit the mask manually, etc.).
+
+The **Other objects** box has a **Solar** row with **Import**, **Merge**, **Flip selected** and **Mask on terrain** / **Save mask** buttons. It generates **ground** solar farms (no rooftop panels) as tilted panels on posts, with the `solar.dds` texture (material `condor_solar`).
+
+**How it works:**
+1. The farm outline is taken from OSM (`power=plant`/`plant:source=solar` or `power=generator`/`generator:source=solar`, including **relations/multipolygons**; rooftop panels are excluded).
+2. **ESRI World Imagery** tiles (aerial photo) over the farm are downloaded into `Working/Autogen/condor_esri_cache/<patch>/`.
+3. A **black/white panel mask** is built from the orthophoto (black = panel) and the outline is auto-aligned to the panels.
+4. **Each connected row in the mask = one panel** built exactly on it (each row uses its own direction, so differently-angled blocks fit too).
+
+**Buttons:**
+- **Import** (single patch only) — builds the farms. Each plant in the patch is a **separate object** `Solar_<patch>_n` in the patch collection. By **LOD**: LOD0 → `Condor_{landscape}_{patch}` **with posts**; LOD1 → `…_LOD1` **without posts**; Both LODs → both.
+- **Flip selected** — flips the tilt (and posts) of the selected panels to the other side (fix each farm separately).
+- **Merge** — merges `Solar_<patch>_n` into one `solar_farm` object (material `condor_solar`).
+
+**Manual mask fix (when the auto mask doesn't match):**
+1. **Mask on terrain** — lays the mask flat on the terrain (red = panels) over the Condor texture.
+2. In **top view**, **move and rotate** the plane so the red rows sit on the real panels.
+3. **Save mask** — writes the mask in that position back into `esri_mask.jpg`.
+4. **Import** — builds exactly from it.
+   - You can also repaint `esri_mask.jpg` by hand in an editor (open `esri_sat.jpg`, draw the panels black, save as `esri_mask.jpg`). If the mask already exists, Import uses it and doesn't overwrite it.
+
+**Texture:** `solar.dds` ships with the plugin (`assets/3Dobjects/`) and is **copied automatically into `Working/Autogen/Textures/`** on import (skipped if it's already there) — exactly like `Bridge.dds` for the bridges. On export the MTL gets the `condor_solar` material with the `solar.dds` texture.
+
+**OBJ order:** `solar_farm` is written with the "everything else" group (alphabetical), i.e. **before** `wind_turbine` / `transmitter` / `pylones`. `pylones` stays the very last object.
+
+**Note:** re-import rebuilds the farm (old `Solar_<patch>_n` removed and rebuilt from the mask); a merged `solar_farm` is left alone. After import the downloaded tiles are deleted (only `esri_sat/mask/overlay/poly.jpg` remain). ⚠️ **Generate Buildings clears the whole patch collection** — do the solars **after** generating buildings. The whole feature lives in the removable file `blender/solar.py`.
 
 ---
 
@@ -656,7 +711,7 @@ The plugin maintains an internal table that assigns each type of generated objec
 | `wind_turbine` | `WindTurbine.dds` | Wind turbines |
 | `chimney` | `Chimney.dds` | Chimneys |
 | `transmitter` | `transmitter.dds` | Communication transmitters (big and small share one material and texture) |
-| `bridges` | `Bridge.dds` | Road and rail bridges over rivers and valleys (deck, railings, pillars) |
+| `bridges` | `Bridge.dds` | Road and rail bridges over rivers, valleys and motorway crossings (deck, railings, pillars) |
 
 ### Which OSM tags belong to the INDUSTRIAL category
 

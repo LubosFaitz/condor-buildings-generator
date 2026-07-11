@@ -62,6 +62,7 @@ class CONDOR_PT_main_panel(Panel):
             row_btns = box.row(align=True)
             row_btns.operator("condor.import_patch", text="Import Patch", icon='IMPORT')
             row_btns.operator("condor.export_terrain", text="Export Terrain", icon='EXPORT')
+            row_btns.operator("condor.clear_terrain", text="", icon='TRASH')
         else:
             # Patch range inputs
             col = box.column(align=True)
@@ -83,7 +84,10 @@ class CONDOR_PT_main_panel(Panel):
 
             if total > 0:
                 box.label(text=f"Patches: {total} ({x_count}×{y_count})", icon='INFO')
-                box.prop(props, "import_patch_terrain")
+                row_t = box.row(align=True)
+                row_t.prop(props, "import_patch_terrain")
+                row_t.operator("condor.clear_terrain", text="", icon='TRASH')
+                row_t.label(text="patch terrain")
                 box.operator("condor.import_patch", text="Import Patch", icon='IMPORT')
 
         # --- OSM Data Source ---
@@ -94,6 +98,9 @@ class CONDOR_PT_main_panel(Panel):
         if props.osm_source == 'DOWNLOAD':
             box.label(text="Will download from Overpass API", icon='URL')
         box.prop(props, "use_msprint")
+        row_osm = box.row(align=True)
+        row_osm.operator("condor.clear_osm_files", text="", icon='TRASH')
+        row_osm.label(text="OSM files")
 
         # --- Output Options ---
         box = layout.box()
@@ -158,6 +165,13 @@ class CONDOR_PT_main_panel(Panel):
             try:
                 from . import bridges
                 bridges.draw_panel(box, context)
+            except Exception:
+                pass
+
+            # --- SOLAR add-on (removable: delete blender/solar.py) ---
+            try:
+                from . import solar
+                solar.draw_panel(box, context)
             except Exception:
                 pass
 

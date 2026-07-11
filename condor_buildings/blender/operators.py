@@ -139,6 +139,47 @@ def resolve_patch_list(props):
     return patches
 
 
+def ensure_patch_osm(paths, patch_id, fetch_if_missing):
+    """True if Working/Autogen/map_<patch>.osm is available for this patch.
+    If it's missing and fetch_if_missing is set, download it first (just so the extra
+    objects - chimneys / bridges / transmitters - can be built for a patch that has no
+    OSM yet). Returns False if it's still missing (no fetch, or the download failed)."""
+    osm_path = os.path.join(paths['autogen'], f"map_{patch_id}.osm")
+    if os.path.exists(osm_path):
+        return True
+    if not fetch_if_missing:
+        return False
+    txt = next((p for p in (
+        os.path.join(paths['heightmaps'], f"h{patch_id}.txt"),
+        os.path.join(paths['heightmaps'], f"H{patch_id}.txt")) if os.path.exists(p)), None)
+    if not txt:
+        return False
+    try:
+        from ..io.patch_metadata import load_patch_metadata
+        from .osm_downloader import download_osm_for_patch
+        meta = load_patch_metadata(txt)
+        res = download_osm_for_patch(meta, output_dir=paths['autogen'], filename_prefix="map")
+        return bool(res and res.success and os.path.exists(osm_path))
+    except Exception as e:
+        print(f"[Condor] ensure_patch_osm: download failed for {patch_id}: {e}")
+        return False
+
+
+def _extra_obj_type(name):
+    """Classify an object as one of the 'extra' types that can be imported separately AND
+    get baked into o<patch>.obj (bridges / chimney / transmitter), or None for a building."""
+    n = name.lower()
+    if n.startswith("bridges"):
+        return "bridges"
+    if "chimney" in n:
+        return "chimney"
+    if "transmitter" in n:
+        return "transmitter"
+    if "solar" in n:
+        return "solar"
+    return None
+
+
 def resolve_patch_files(patch_id, paths):
     """Find h*.txt and h*.obj for a patch. Returns (txt, obj) or (None, None)."""
     heightmaps_dir = paths['heightmaps']
@@ -1290,6 +1331,78 @@ class CONDOR_OT_export_terrain(Operator):
             return {'CANCELLED'}
 
 
+class CONDOR_OT_clear_terrain(Operator):
+    """Remove terrain object(s) from the scene for the selected patch / range"""
+
+    bl_idname = "condor.clear_terrain"
+    bl_label = "Clear Terrain"
+    bl_description = "Remove terrain object(s) (TR3<patch>) from the scene for the selected patch / range"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        props = context.scene.condor_buildings
+        if props.single_patch_mode:
+            return bool(props.patch_id)
+        return True
+
+    def execute(self, context):
+        props = context.scene.condor_buildings
+        patch_ids = resolve_patch_list(props)
+        removed = 0
+        for patch_id in patch_ids:
+            for name in (f"TR3{patch_id}", f"TR3f{patch_id}"):
+                ob = bpy.data.objects.get(name)
+                if ob is not None:
+                    bpy.data.objects.remove(ob, do_unlink=True)
+                    removed += 1
+        if removed:
+            self.report({'INFO'}, f"Removed {removed} terrain object(s)")
+        else:
+            self.report({'WARNING'}, "No matching terrain object(s) in scene")
+        return {'FINISHED'}
+
+
+class CONDOR_OT_clear_osm_files(Operator):
+    """Delete OSM files from Working/Autogen (and MSprint) for the selected patch / range"""
+
+    bl_idname = "condor.clear_osm_files"
+    bl_label = "Clear OSM Files"
+    bl_description = ("Delete map_<patch>.osm (+ .ori backup) in Working/Autogen and the "
+                      "MSprint copy for the selected patch / range")
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        props = context.scene.condor_buildings
+        if not (bool(props.condor_path) and props.landscape_name != 'NONE'):
+            return False
+        return bool(props.patch_id) if props.single_patch_mode else True
+
+    def execute(self, context):
+        props = context.scene.condor_buildings
+        paths = resolve_condor_paths(props)
+        if not paths:
+            self.report({'ERROR'}, "Invalid Condor paths.")
+            return {'CANCELLED'}
+        removed = 0
+        for patch_id in resolve_patch_list(props):
+            targets = [
+                os.path.join(paths['autogen'], f"map_{patch_id}.osm"),
+                os.path.join(paths['autogen'], f"map_{patch_id}.osm.ori"),
+                os.path.join(paths['autogen'], "MSprint", f"map_{patch_id}.osm"),
+            ]
+            for p in targets:
+                try:
+                    if os.path.exists(p):
+                        os.remove(p)
+                        removed += 1
+                except OSError as e:
+                    self.report({'WARNING'}, f"Could not delete {os.path.basename(p)}: {e}")
+        self.report({'INFO'}, f"Deleted {removed} OSM file(s)")
+        return {'FINISHED'}
+
+
 class CONDOR_OT_merge_wind_turbines(Operator):
     """Merge all wind_turbine objects into one and apply transforms"""
 
@@ -1452,10 +1565,12 @@ class CONDOR_OT_import_chimneys(Operator):
                     patch_ids.append(f"{x:03d}{y:03d}")
 
         total = 0
+        missing_osm = []
 
         for patch_id in patch_ids:
             osm_path = os.path.join(paths['autogen'], f"map_{patch_id}.osm")
-            if not os.path.exists(osm_path):
+            if not ensure_patch_osm(paths, patch_id, True):
+                missing_osm.append(patch_id)
                 continue
 
             # Optional: pull this patch's chimneys out of an extra chimney.osm
@@ -1568,13 +1683,15 @@ class CONDOR_OT_import_chimneys(Operator):
 
             patch_chimneys = []
             for lod_suffix, low in lod_variants:
+                # already present for THIS patch + LOD (separately imported OR baked in the
+                # patch OBJ)? -> skip so chimneys aren't duplicated
+                _pcol = bpy.data.collections.get(
+                    f"Condor_{props.landscape_name}_{patch_id}{lod_suffix}")
+                if _pcol is not None and any(_extra_obj_type(o.name) == "chimney"
+                                             for o in _pcol.all_objects):
+                    continue
                 big_col = None
                 small_col = None
-                # Clear previous chimneys of THIS patch + LOD before re-importing.
-                for obj in [o for o in bpy.data.objects
-                            if o.get("patch_id") == patch_id and o.get("lod", "") == lod_suffix
-                            and o.name.startswith("Chimney_")]:
-                    bpy.data.objects.remove(obj, do_unlink=True)
 
                 for idx, (cx, cy, height, has_height, material) in enumerate(chimneys):
                     # Model choice: brick -> small (brick texture); otherwise big
@@ -1676,7 +1793,10 @@ class CONDOR_OT_import_chimneys(Operator):
                     ch.location.x += patch_offset_x
                     ch.location.y += patch_offset_y
 
-        self.report({'INFO'}, f"Imported {total} chimneys")
+        msg = f"Imported {total} chimneys"
+        if missing_osm:
+            msg += f" | OSM missing (skipped): {', '.join(missing_osm)}"
+        self.report({'WARNING'} if missing_osm else {'INFO'}, msg)
         return {'FINISHED'}
 
 
@@ -1690,11 +1810,11 @@ class CONDOR_OT_merge_chimneys(Operator):
 
     @staticmethod
     def _is_chimney(name):
-        # Any object whose name CONTAINS 'chimney' (case-insensitive) counts; the
-        # merge groups by collection, so each patch/LOD collection is reduced to one
-        # 'chimney'. Robust to any naming: 'Chimney_045034_001', 'chimney.002',
-        # 'chimney_NOVY', etc. - across multiple patches and both LODs.
-        return 'chimney' in name.lower()
+        # Only freshly-imported chimneys ('Chimney_<patch>_NNN') count - SAME as transmitters
+        # (_is_t = startswith 'transmitter_'). A chimney BAKED into the patch OBJ ('chimney.003')
+        # or an already-merged one ('chimney') is NOT matched, so importing patches doesn't
+        # light the button and a merged chimney doesn't re-trigger it.
+        return name.lower().startswith("chimney_")
 
     @staticmethod
     def _condor_collection(obj):
@@ -1711,6 +1831,8 @@ class CONDOR_OT_merge_chimneys(Operator):
 
     @classmethod
     def poll(cls, context):
+        # same as transmitters: enabled while any freshly-imported 'Chimney_...' exists;
+        # after merge it becomes 'chimney' (not matched) so the button greys
         return any(cls._is_chimney(obj.name) for obj in bpy.data.objects)
 
     def execute(self, context):
@@ -2010,12 +2132,28 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
             return None
 
         files_to_import = []
+        skipped_lods = []
         obj_path_lod0 = os.path.join(paths['autogen'], f"o{patch_id}.obj")
         obj_path_lod1 = os.path.join(paths['autogen'], f"o{patch_id}_LOD1.obj")
-        if os.path.exists(obj_path_lod0):
-            files_to_import.append((obj_path_lod0, f"Condor_{props.landscape_name}_{patch_id}"))
-        if os.path.exists(obj_path_lod1):
-            files_to_import.append((obj_path_lod1, f"Condor_{props.landscape_name}_{patch_id}_LOD1"))
+        for obj_path, collection_name in (
+                (obj_path_lod0, f"Condor_{props.landscape_name}_{patch_id}"),
+                (obj_path_lod1, f"Condor_{props.landscape_name}_{patch_id}_LOD1")):
+            if not os.path.exists(obj_path):
+                continue
+            existing_col = bpy.data.collections.get(collection_name)
+            # already imported = the collection already has a BUILDING (non-extra) object;
+            # a lone separately-imported bridge/chimney/transmitter must NOT block buildings
+            if existing_col is not None and any(
+                    _extra_obj_type(o.name) is None for o in existing_col.all_objects):
+                # this patch + LOD is already imported -> skip (no re-import / duplicate)
+                skipped_lods.append(collection_name)
+                continue
+            files_to_import.append((obj_path, collection_name))
+
+        # everything requested is already in the scene -> nothing to do
+        if not files_to_import and skipped_lods:
+            self.report({'INFO'}, f"Patch {patch_id} already imported ({len(skipped_lods)} LOD) - skipped")
+            return {'FINISHED'}
 
         if not files_to_import:
             print(f"[CONDOR normal] no OBJ in autogen, setting viewport before early return")
@@ -2063,9 +2201,17 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
             if layer_col:
                 context.view_layer.active_layer_collection = layer_col
 
+            # extra objects (bridges/chimney/transmitter) already present for this patch ->
+            # the OBJ's baked copies of those get dropped after import, so they stay ONCE
+            pre_extra = set()
+            for _o in patch_col.all_objects:
+                _t = _extra_obj_type(_o.name)
+                if _t:
+                    pre_extra.add(_t)
+
             existing_objects = set(bpy.data.objects)
 
-            import_axis = 'X'
+            import_axis = 'X'   # patch OBJ (o<patch>.obj) is always Condor X,Z (c3d-derived too)
             if bpy.app.version >= (4, 0, 0):
                 bpy.ops.wm.obj_import(
                     filepath=obj_path,
@@ -2083,6 +2229,19 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
             context.view_layer.active_layer_collection = prev_active_col
 
             new_objects = [o for o in bpy.data.objects if o not in existing_objects]
+
+            # drop OBJ-baked bridges/chimney/transmitter that already exist separately for
+            # this patch (keep the ones already in the scene) -> no duplicates
+            if pre_extra:
+                _kept = []
+                for _o in new_objects:
+                    _t = _extra_obj_type(_o.name)
+                    if _t is not None and _t in pre_extra:
+                        bpy.data.objects.remove(_o, do_unlink=True)
+                    else:
+                        _kept.append(_o)
+                new_objects = _kept
+
             for obj in new_objects:
                 base_obj_name = _re.sub(r'\.\d+$', '', obj.name)
                 for slot in obj.material_slots:
@@ -2254,15 +2413,27 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
 
             # --- OBJ IMPORT ---
             files_to_import = []
+            any_obj = False
             obj_path_lod0 = os.path.join(paths['autogen'], f"o{patch_id}.obj")
             obj_path_lod1 = os.path.join(paths['autogen'], f"o{patch_id}_LOD1.obj")
-            if os.path.exists(obj_path_lod0):
-                files_to_import.append((obj_path_lod0, f"Condor_{props.landscape_name}_{patch_id}"))
-            if os.path.exists(obj_path_lod1):
-                files_to_import.append((obj_path_lod1, f"Condor_{props.landscape_name}_{patch_id}_LOD1"))
+            for obj_path, collection_name in (
+                    (obj_path_lod0, f"Condor_{props.landscape_name}_{patch_id}"),
+                    (obj_path_lod1, f"Condor_{props.landscape_name}_{patch_id}_LOD1")):
+                if not os.path.exists(obj_path):
+                    continue
+                any_obj = True
+                existing_col = bpy.data.collections.get(collection_name)
+                # already imported = collection already has a BUILDING (non-extra) object ->
+                # skip this patch+LOD (no re-import / duplicate). A lone bridge/chimney/
+                # transmitter does NOT count as imported buildings.
+                if existing_col is not None and any(
+                        _extra_obj_type(o.name) is None for o in existing_col.all_objects):
+                    continue
+                files_to_import.append((obj_path, collection_name))
 
             if not files_to_import:
-                errors.append(f"Patch {patch_id}: o{patch_id}.obj not found in Autogen")
+                if not any_obj:
+                    errors.append(f"Patch {patch_id}: o{patch_id}.obj not found in Autogen")
                 continue
 
             for obj_path, collection_name in files_to_import:
@@ -2276,9 +2447,17 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
                 if layer_col:
                     context.view_layer.active_layer_collection = layer_col
 
+                # extra objects (bridges/chimney/transmitter) already present for this patch
+                # -> the OBJ's baked copies of those get dropped after import (stay ONCE)
+                pre_extra = set()
+                for _o in patch_col.all_objects:
+                    _t = _extra_obj_type(_o.name)
+                    if _t:
+                        pre_extra.add(_t)
+
                 existing_objects = set(bpy.data.objects)
 
-                import_axis = _detect_obj_forward_axis(obj_path)
+                import_axis = 'X'   # patch OBJ (o<patch>.obj) is always Condor X,Z (c3d-derived too)
                 if bpy.app.version >= (4, 0, 0):
                     bpy.ops.wm.obj_import(filepath=obj_path, forward_axis=import_axis, up_axis='Z', import_vertex_groups=False)
                 else:
@@ -2287,6 +2466,18 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
                 context.view_layer.active_layer_collection = prev_active_col
 
                 new_objects = [o for o in bpy.data.objects if o not in existing_objects]
+
+                # drop OBJ-baked bridges/chimney/transmitter that already exist separately
+                if pre_extra:
+                    _kept = []
+                    for _o in new_objects:
+                        _t = _extra_obj_type(_o.name)
+                        if _t is not None and _t in pre_extra:
+                            bpy.data.objects.remove(_o, do_unlink=True)
+                        else:
+                            _kept.append(_o)
+                    new_objects = _kept
+
                 for obj in new_objects:
                     base_obj_name = _re.sub(r'\.\d+$', '', obj.name)
                     for slot in obj.material_slots:
@@ -2394,6 +2585,8 @@ _classes = [
     CONDOR_OT_clear_buildings,
     CONDOR_OT_export_condor,
     CONDOR_OT_export_terrain,
+    CONDOR_OT_clear_terrain,
+    CONDOR_OT_clear_osm_files,
     CONDOR_OT_merge_wind_turbines,
     CONDOR_OT_import_chimneys,
     CONDOR_OT_merge_chimneys,

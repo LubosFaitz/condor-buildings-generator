@@ -383,7 +383,7 @@ class CONDOR_OT_import_transmitters(Operator):
     def execute(self, context):
         import xml.etree.ElementTree as ET
         import shutil as _shutil
-        from .operators import resolve_condor_paths
+        from .operators import resolve_condor_paths, ensure_patch_osm, _extra_obj_type
         from ..projection.transverse_mercator import TransverseMercatorProjector
         from ..io.patch_metadata import load_patch_metadata
 
@@ -404,9 +404,12 @@ class CONDOR_OT_import_transmitters(Operator):
                     patch_ids.append(f"{x:03d}{y:03d}")
 
         total = 0
+        skipped_existing = 0
+        missing_osm = []
         for patch_id in patch_ids:
             osm_path = os.path.join(paths['autogen'], f"map_{patch_id}.osm")
-            if not os.path.exists(osm_path):
+            if not ensure_patch_osm(paths, patch_id, True):
+                missing_osm.append(patch_id)
                 continue
             txt_path = next((p for p in (
                 os.path.join(paths['heightmaps'], f"h{patch_id}.txt"),
@@ -429,11 +432,28 @@ class CONDOR_OT_import_transmitters(Operator):
             if not items:
                 continue
 
-            # Clear previous transmitters of THIS patch before re-importing, so a
-            # repeated import doesn't pile up .001 / .002 duplicates.
-            for o in [x for x in bpy.data.objects
-                      if x.get("patch_id") == patch_id and x.name.startswith("Transmitter_")]:
-                bpy.data.objects.remove(o, do_unlink=True)
+            # Which LODs are requested, and which are NOT yet imported for this patch.
+            # Already-imported LODs are left as they are (no re-import / duplicate); only
+            # the missing LOD(s) get built. Different LOD = different object -> allowed.
+            req_lods = []
+            if props.output_lod in ('LOD0', 'BOTH'):
+                req_lods.append("")
+            if props.output_lod in ('LOD1', 'BOTH'):
+                req_lods.append("_LOD1")
+            if not req_lods:
+                req_lods = [""]
+            # a LOD counts as done if its patch collection already has a transmitter
+            # (separately imported OR baked into the patch OBJ)
+            missing_lods = []
+            for s in req_lods:
+                _pcol = bpy.data.collections.get(f"Condor_{props.landscape_name}_{patch_id}{s}")
+                has = _pcol is not None and any(_extra_obj_type(o.name) == "transmitter"
+                                                for o in _pcol.all_objects)
+                if not has:
+                    missing_lods.append(s)
+            if not missing_lods:
+                skipped_existing += 1
+                continue
 
             # copy textures once we know there's something
             for key, (_obj, dds, _mat) in MODELS.items():
@@ -518,21 +538,16 @@ class CONDOR_OT_import_transmitters(Operator):
                 for c in list(ob.users_collection):
                     c.objects.unlink(ob)
 
-                # which LODs to place into (transmitter model is the same in both)
-                lod_suffixes = []
-                if props.output_lod in ('LOD0', 'BOTH'):
-                    lod_suffixes.append("")
-                if props.output_lod in ('LOD1', 'BOTH'):
-                    lod_suffixes.append("_LOD1")
-                if not lod_suffixes:
-                    lod_suffixes.append("")
-
-                for li, suffix in enumerate(lod_suffixes):
+                # place ONLY into the LODs that aren't imported yet (missing_lods);
+                # transmitter model is the same in both LODs
+                for li, suffix in enumerate(missing_lods):
                     if li == 0:
                         inst = ob
                     else:
                         inst = ob.copy()
                         inst.data = ob.data.copy()   # vlastni mesh (ne sdileny) - jinak merge/transform_apply spadne na "multi user"
+                    inst["patch_id"] = patch_id
+                    inst["lod"] = suffix
                     col_name = f"Condor_{props.landscape_name}_{patch_id}{suffix}"
                     col = bpy.data.collections.get(col_name) or bpy.data.collections.new(col_name)
                     if col not in context.scene.collection.children_recursive:
@@ -551,7 +566,12 @@ class CONDOR_OT_import_transmitters(Operator):
                 for ob in placed:
                     ob.location.x += off_x; ob.location.y += off_y
 
-        self.report({'INFO'}, f"Imported {total} transmitters")
+        msg = f"Imported {total} transmitters"
+        if skipped_existing:
+            msg += f", {skipped_existing} patch(es) already imported (skipped)"
+        if missing_osm:
+            msg += f" | OSM missing (skipped): {', '.join(missing_osm)}"
+        self.report({'WARNING'} if missing_osm else {'INFO'}, msg)
         return {'FINISHED'}
 
 

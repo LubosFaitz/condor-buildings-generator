@@ -124,8 +124,11 @@ def _classify(tags):
 
 
 def _parse(root, projector):
-    """Return (bridges, waterways). bridges = list of dicts
-    {class,width,points:[(x,y,in_patch)]}; waterways = list of [(x,y),...]."""
+    """Return (bridges, waterways, g_moto, g_other). bridges = list of dicts
+    {class,width,points:[(x,y,in_patch)]}; waterways = list of [(x,y),...].
+    g_moto / g_other = GROUND (non-bridge, non-tunnel) ways used to detect a
+    grade-separated crossing: g_moto = dalnice (motorway) lines, g_other = silnice +
+    koleje (road + rail) lines. Each is a list of [(x,y),...]."""
     node_coords = {n.get("id"): (float(n.get("lat")), float(n.get("lon")))
                    for n in root.findall("node")}
 
@@ -141,7 +144,7 @@ def _parse(root, projector):
             pts.append((x, y, in_patch))
         return pts
 
-    bridges, waterways = [], []
+    bridges, waterways, g_moto, g_other = [], [], [], []
     for w in root.findall("way"):
         tags = {t.get("k"): t.get("v") for t in w.findall("tag")}
         if tags.get("waterway") in RIVER_WATERWAY:
@@ -151,6 +154,23 @@ def _parse(root, projector):
             continue
         cls = _classify(tags)
         if cls is None:
+            # Not a road/rail bridge. Is it a GROUND (non-bridge, non-tunnel) road /
+            # motorway / rail? Those are the "obstacle below" for a grade-separated
+            # crossing (a nadjezd). A bridge/tunnel way is NOT ground and is skipped.
+            br = tags.get("bridge")
+            tn = tags.get("tunnel")
+            if (br and br != "no") or (tn and tn != "no"):
+                continue
+            hw = tags.get("highway")
+            rw = tags.get("railway")
+            if hw in MOTORWAY_HIGHWAY:
+                pts = project_way(w)
+                if len(pts) >= 2:
+                    g_moto.append([(x, y) for (x, y, _ip) in pts])
+            elif hw in ROAD_HIGHWAY or rw in RAIL_RAILWAY:
+                pts = project_way(w)
+                if len(pts) >= 2:
+                    g_other.append([(x, y) for (x, y, _ip) in pts])
             continue
         pts = project_way(w)
         if len(pts) >= 2:
@@ -159,7 +179,7 @@ def _parse(root, projector):
                 width += 2.0 * SIDEWALK_WIDTH
             bridges.append({"class": cls, "width": width, "points": pts,
                             "service": bool(tags.get("service") or tags.get("usage") == "industrial")})
-    return bridges, waterways
+    return bridges, waterways, g_moto, g_other
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +244,20 @@ def _crosses_waterway(xy, waterways, wbounds):
             for j in range(len(wline) - 1):
                 if _seg_intersect(a, b, wline[j], wline[j + 1]):
                     return True
+    return False
+
+
+def _crosses_road(xy, cls, g_moto, gm_bounds, g_other, go_bounds):
+    """Grade-separated crossing (nadjezd) that qualifies a bridge - but ONLY when a
+    DALNICE (motorway) is on one side of the crossing:
+      * ANY bridge that crosses a ground MOTORWAY,          and
+      * a MOTORWAY bridge that crosses a ground road / rail.
+    So road×road, road×rail and rail×rail crossings (yards, stations, factories) are
+    NOT counted. Reuses the same line-vs-line test as the waterway check."""
+    if _crosses_waterway(xy, g_moto, gm_bounds):        # crosses a ground dalnice
+        return True
+    if cls == "motorway" and _crosses_waterway(xy, g_other, go_bounds):
+        return True
     return False
 
 
@@ -687,6 +721,92 @@ def _merge_crossing(specs):
     return out
 
 
+def _pt_poly_dist(p, poly):
+    """Shortest distance from point p to a polyline."""
+    best = 1e18
+    for i in range(len(poly) - 1):
+        ax, ay = poly[i]
+        bx, by = poly[i + 1]
+        vx, vy = bx - ax, by - ay
+        L2 = vx * vx + vy * vy
+        if L2 < 1e-9:
+            d = math.hypot(p[0] - ax, p[1] - ay)
+        else:
+            t = max(0.0, min(1.0, ((p[0] - ax) * vx + (p[1] - ay) * vy) / L2))
+            d = math.hypot(p[0] - (ax + vx * t), p[1] - (ay + vy * t))
+        best = min(best, d)
+    return best
+
+
+def _overlap_frac(A, B, thr):
+    """Fraction (0..1) of polyline A that runs within `thr` metres of polyline B - i.e. how
+    much of deck A lies ON TOP of deck B. Samples A every ~5 m."""
+    cum = [0.0]
+    for i in range(len(A) - 1):
+        cum.append(cum[-1] + math.hypot(A[i + 1][0] - A[i][0], A[i + 1][1] - A[i][1]))
+    total = cum[-1]
+    if total < 1e-6:
+        return 0.0
+    n = max(2, int(total / 5.0))
+    inside = 0
+    for k in range(n + 1):
+        s = total * k / n
+        for i in range(len(cum) - 1):        # point at arc-length s along A
+            if s <= cum[i + 1]:
+                seg = cum[i + 1] - cum[i]
+                t = 0.0 if seg < 1e-9 else (s - cum[i]) / seg
+                px = A[i][0] + (A[i + 1][0] - A[i][0]) * t
+                py = A[i][1] + (A[i + 1][1] - A[i][1]) * t
+                break
+        else:
+            px, py = A[-1]
+        if _pt_poly_dist((px, py), B) <= thr:
+            inside += 1
+    return inside / (n + 1)
+
+
+def _drop_crossing_decks(specs):
+    """Where two decks that run ROUGHLY PARALLEL sit ON TOP of each other (two motorway
+    carriageways / a road stacked on a motorway / ramps that fan out into a 'V' at a
+    junction), keep only the LONGER one and drop the other, so the decks don't stack. Two
+    conditions must BOTH hold, which is what keeps a real grade separation intact:
+      * the decks are ~parallel (|dir_i . dir_j| >= 0.6) - a bridge that CROSSES another at
+        an angle is NOT parallel, so both are kept;
+      * a good chunk of the shorter deck (>= 25 %) runs within the decks' combined half-width
+        of the longer one - decks that sit side by side WITH A GAP overlap ~0 and are kept."""
+    def length(sp):
+        xy = sp["xy"]
+        return sum(math.hypot(xy[i + 1][0] - xy[i][0], xy[i + 1][1] - xy[i][1])
+                   for i in range(len(xy) - 1))
+
+    def unit_dir(sp):
+        p0, p1 = sp["xy"][0], sp["xy"][-1]
+        dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+        d = math.hypot(dx, dy) or 1.0
+        return (dx / d, dy / d)
+
+    lens = [length(sp) for sp in specs]
+    dirs = [unit_dir(sp) for sp in specs]
+    drop = set()
+    for i in range(len(specs)):
+        if i in drop:
+            continue
+        for j in range(i + 1, len(specs)):
+            if j in drop:
+                continue
+            di, dj = dirs[i], dirs[j]
+            if abs(di[0] * dj[0] + di[1] * dj[1]) < 0.6:   # not parallel -> a real crossing
+                continue
+            # keep the longer, test how much of the SHORTER lies on top of the longer
+            lo, hi = (j, i) if lens[j] <= lens[i] else (i, j)
+            thr = (specs[i]["width"] + specs[j]["width"]) / 2.0
+            if _overlap_frac(specs[lo]["xy"], specs[hi]["xy"], thr) >= 0.25:
+                drop.add(lo)
+                if lo == i:
+                    break
+    return [sp for k, sp in enumerate(specs) if k not in drop]
+
+
 def _cap_rail_width(specs):
     """Cap the width of rail decks. One track = 5 m on the texture and the texture
     holds 6 tracks, so a single deck is at most 30 m (width always a multiple of 5).
@@ -720,12 +840,19 @@ def _cap_rail_width(specs):
     return out
 
 
-def _build_bridges(bridges, waterways, z_at, is_water=None, railings=True):
+def _build_bridges(bridges, waterways, z_at, is_water=None, railings=True,
+                   g_moto=None, g_other=None):
     """Build merged (verts, faces). verts = [(x,y,z)], faces = [(i,j,k,l)/(i,j,k)]
     with 0-based indices. Returns (verts, faces, n_bridges, n_pillars).
-    railings=False drops the zabradli (used for the lighter LOD1)."""
+    railings=False drops the zabradli (used for the lighter LOD1).
+    g_moto / g_other = ground motorway / (road+rail) lines for grade-separated
+    crossing detection (a nadjezd over a dalnice)."""
     verts, faces, uvs = [], [], []
     wbounds = [_bbox(w) for w in waterways]
+    g_moto = g_moto or []
+    g_other = g_other or []
+    gm_bounds = [_bbox(w) for w in g_moto]
+    go_bounds = [_bbox(w) for w in g_other]
     bridges = _merge_parallel(bridges)
 
     def av(p, uv):
@@ -754,9 +881,12 @@ def _build_bridges(bridges, waterways, z_at, is_water=None, railings=True):
             # in the orthophoto alpha): keeps a station's river bridge, drops the
             # dry plant vlecky
             qualifies = over_water
+            water_q, cross_q = over_water, False
         else:
-            qualifies = (_valley(xy, cum, z_deck, z_at)
-                         or _crosses_waterway(xy, waterways, wbounds) or over_water)
+            water_q = over_water or _crosses_waterway(xy, waterways, wbounds)
+            cross_q = _crosses_road(xy, b["class"], g_moto, gm_bounds,
+                                    g_other, go_bounds)
+            qualifies = _valley(xy, cum, z_deck, z_at) or water_q or cross_q
         if not qualifies:
             n_skipped += 1
             continue
@@ -764,7 +894,9 @@ def _build_bridges(bridges, waterways, z_at, is_water=None, railings=True):
         # reach the bank across the water using the orthophoto alpha (reliable)
         if is_water is not None:
             xy = _span_water(xy, is_water)
-        specs.append({"xy": xy, "width": b["width"], "class": b["class"]})
+        # remember HOW it qualified -> drives the pillars later (crossing = none, water = 2)
+        specs.append({"xy": xy, "width": b["width"], "class": b["class"],
+                      "water": water_q, "crossing": cross_q})
 
     # fuse the two carriageways of one road (their bank-to-bank spans cross into an 'X')
     # into a single deck; genuinely separate decks with a gap stay side by side
@@ -775,6 +907,9 @@ def _build_bridges(bridges, waterways, z_at, is_water=None, railings=True):
 
     # rail decks: max 6 tracks (30 m) per deck; a wider bundle -> at most two 30 m decks
     specs = _cap_rail_width(specs)
+
+    # two same-type decks that CROSS (diverging ramps 'V') -> keep only the longer one
+    specs = _drop_crossing_decks(specs)
 
     # Pass 2: build the deck geometry for each (aligned) span.
     for spec in specs:
@@ -791,6 +926,7 @@ def _build_bridges(bridges, waterways, z_at, is_water=None, railings=True):
         # not lie on it. OVER WATER the heightmap is the riverBED but the deck sits at the
         # water SURFACE (~the chord), so there we lift a full ARCH_CLEARANCE above the
         # chord; over a DRY valley we lift only enough to clear the ground.
+        bowed = False                        # True = deck lifted into an arch in the middle
         if total > 1e-6 and nseg >= 2:
             mx, my, chord_mid = rp[nseg // 2]
             if is_water is not None and is_water(mx, my):
@@ -800,6 +936,7 @@ def _build_bridges(bridges, waterways, z_at, is_water=None, railings=True):
             if amp > 0.0:
                 rp = [(x, y, z + amp * math.sin(math.pi * k / nseg))
                       for k, (x, y, z) in enumerate(rp)]
+                bowed = True
         rxy = [(p[0], p[1]) for p in rp]
         # arched arc-length profile so the pillars sit under the RAISED deck
         rcum = [total * k / nseg for k in range(nseg + 1)]
@@ -891,9 +1028,20 @@ def _build_bridges(bridges, waterways, z_at, is_water=None, railings=True):
         faces.append((first_a["Lo"], first_a["Lb"], first_a["Rb"], first_a["Ro"]))  # start cap
         faces.append((last_b["Lo"], last_b["Ro"], last_b["Rb"], last_b["Lb"]))      # end cap
 
-        # pillars: count by span length (none < 20 m, else ~1 per 30 m), spaced
-        # evenly across the span at L*(i+1)/(n+1)
-        n_pil = 0 if total < PILLAR_MIN_BRIDGE else max(1, round(total / PILLAR_TARGET_SPACING))
+        # Pillars depend on HOW the deck sits (only decks BOWED up in the middle get the
+        # special treatment; decks that follow the terrain keep the normal spacing):
+        #   * bowed up over a road/dalnice/rail crossing (nadjezd) -> NO pillars (a pier
+        #     would land on the road/track below);
+        #   * bowed up over a river -> exactly TWO pillars, at 1/3 and 2/3 (none in the middle);
+        #   * otherwise -> ~1 pillar per PILLAR_TARGET_SPACING, spaced evenly.
+        if total < PILLAR_MIN_BRIDGE:
+            n_pil = 0
+        elif bowed and spec.get("crossing"):
+            n_pil = 0
+        elif bowed and spec.get("water"):
+            n_pil = 2
+        else:
+            n_pil = max(1, round(total / PILLAR_TARGET_SPACING))
         for pi in range(n_pil):
             s = total * (pi + 1) / (n_pil + 1)
             cx, cy, zt = _sample(rxy, rcum, rz, s)   # arched deck profile
@@ -1043,7 +1191,7 @@ class CONDOR_OT_import_bridges(Operator):
 
     def execute(self, context):
         import xml.etree.ElementTree as ET
-        from .operators import resolve_condor_paths
+        from .operators import resolve_condor_paths, ensure_patch_osm, _extra_obj_type
         from ..projection.transverse_mercator import TransverseMercatorProjector
         from ..io.patch_metadata import load_patch_metadata
         from ..io.terrain_loader import load_terrain
@@ -1062,10 +1210,12 @@ class CONDOR_OT_import_bridges(Operator):
                          for y in range(props.patch_y_min, props.patch_y_max + 1)]
 
         total_bridges = total_pillars = total_skipped = 0
-        total_found = total_waterways = 0
+        total_found = total_waterways = total_existing = 0
+        missing_osm = []
         for patch_id in patch_ids:
             osm_path = os.path.join(paths['autogen'], f"map_{patch_id}.osm")
-            if not os.path.exists(osm_path):
+            if not ensure_patch_osm(paths, patch_id, True):
+                missing_osm.append(patch_id)
                 continue
             txt_path = next((p for p in (
                 os.path.join(paths['heightmaps'], f"h{patch_id}.txt"),
@@ -1086,7 +1236,7 @@ class CONDOR_OT_import_bridges(Operator):
                 logger.warning("bridges: setup failed for %s: %s", patch_id, e)
                 continue
 
-            bridges, waterways = _parse(root, projector)
+            bridges, waterways, g_moto, g_other = _parse(root, projector)
             total_found += len(bridges)
             total_waterways += len(waterways)
             if not bridges:
@@ -1128,8 +1278,16 @@ class CONDOR_OT_import_bridges(Operator):
                 lod_variants.append(("", True))
 
             for vi, (suffix, railings) in enumerate(lod_variants):
+                # already present for THIS patch + LOD (separately imported OR baked in the
+                # patch OBJ)? -> skip so bridges aren't duplicated
+                _pcol = bpy.data.collections.get(
+                    f"Condor_{props.landscape_name}_{patch_id}{suffix}")
+                if _pcol is not None and any(_extra_obj_type(o.name) == "bridges"
+                                             for o in _pcol.all_objects):
+                    total_existing += 1
+                    continue
                 verts, faces, uvs, nb, npil, nsk = _build_bridges(
-                    bridges, waterways, z_at, is_water, railings)
+                    bridges, waterways, z_at, is_water, railings, g_moto, g_other)
                 if vi == 0:
                     total_skipped += nsk
                     total_bridges += nb
@@ -1138,12 +1296,6 @@ class CONDOR_OT_import_bridges(Operator):
                     continue
 
                 obj_name = "bridges"   # stejny nazev v obou LOD (LOD urcuje kolekce); Blender da LOD1 pripadne .001
-                # remove a previous bridges object of THIS patch + THIS LOD (replace, not pile up)
-                for o in list(bpy.data.objects):
-                    if (o.name.startswith("bridges") and o.get("patch_id") == patch_id
-                            and o.get("lod", "") == suffix):
-                        bpy.data.objects.remove(o, do_unlink=True)
-
                 mesh = bpy.data.meshes.new(obj_name)
                 mesh.from_pydata([tuple(v) for v in verts], [], [list(f) for f in faces])
                 mesh.update()
@@ -1182,7 +1334,12 @@ class CONDOR_OT_import_bridges(Operator):
         msg = (f"Bridges: built {total_bridges} (pillars {total_pillars}), "
                f"skipped (not over valley/river) {total_skipped}, "
                f"bridges in OSM {total_found}, rivers {total_waterways}")
-        self.report({'INFO'} if total_bridges > 0 else {'WARNING'}, msg)
+        if total_existing:
+            msg += f", already imported {total_existing} (skipped)"
+        if missing_osm:
+            msg += f" | OSM missing (skipped): {', '.join(missing_osm)}"
+        self.report({'INFO'} if (total_bridges > 0 or total_existing) and not missing_osm
+                    else {'WARNING'}, msg)
         return {'FINISHED'}
 
 
@@ -1197,8 +1354,9 @@ _SETUP_CACHE = {"patch": None, "key": None, "setup": None}
 
 
 def _patch_setup(paths, patch_id):
-    """Return (bridges, waterways, z_at, is_water) for a patch, or None. Cached per patch
-    (one slot) so LOD0 and LOD1 share the same single parse/terrain/water load."""
+    """Return (bridges, waterways, g_moto, g_other, z_at, is_water) for a patch, or None.
+    Cached per patch (one slot) so LOD0 and LOD1 share the same single parse/terrain/water
+    load."""
     import xml.etree.ElementTree as ET
     from ..projection.transverse_mercator import TransverseMercatorProjector
     from ..io.patch_metadata import load_patch_metadata
@@ -1234,7 +1392,7 @@ def _patch_setup(paths, patch_id):
         logger.warning("bridges: file-mode setup failed for %s: %s", patch_id, e)
         return None
 
-    bridges, waterways = _parse(root, projector)
+    bridges, waterways, g_moto, g_other = _parse(root, projector)
     if not bridges:
         return None
     is_water = None
@@ -1255,7 +1413,7 @@ def _patch_setup(paths, patch_id):
     ]
     z_at, is_water = _cross_patch_samplers(
         patch_id, paths['heightmaps'], texture_dirs, _make_terrain_z(terrain), is_water)
-    setup = (bridges, waterways, z_at, is_water)
+    setup = (bridges, waterways, g_moto, g_other, z_at, is_water)
     c["patch"], c["key"], c["setup"] = patch_id, key, setup
     return setup
 
@@ -1266,9 +1424,9 @@ def _generate_patch_geometry(paths, patch_id, railings=True):
     setup = _patch_setup(paths, patch_id)
     if setup is None:
         return None
-    bridges, waterways, z_at, is_water = setup
+    bridges, waterways, g_moto, g_other, z_at, is_water = setup
     verts, faces, uvs, nb, npil, nsk = _build_bridges(
-        bridges, waterways, z_at, is_water, railings)
+        bridges, waterways, z_at, is_water, railings, g_moto, g_other)
     if not verts or nb == 0:
         return None
     return verts, faces, uvs
@@ -1419,10 +1577,13 @@ _classes = [CONDOR_OT_import_bridges]
 
 
 def _patch_overpass_query():
-    """Wrap osm_downloader.build_overpass_query so the OSM download ALSO fetches
-    water courses (rivers/streams/canals) - the bridge ways are already fetched by
-    the base query. Kept here so the whole feature lives in one file; removing this
-    module restores the original query."""
+    """Wrap osm_downloader.build_overpass_query so the OSM download ALSO fetches:
+      * water courses (rivers) - a bridge over a river,
+      * GROUND (non-bridge) motorways / roads / rails - the "obstacle below" needed to
+        detect a grade-separated crossing (a nadjezd over a dalnice). service / farm
+        tracks are deliberately left out (yards would bloat the download for nothing).
+    The bridge ways themselves are already fetched by the base query. Kept here so the
+    whole feature lives in one file; removing this module restores the original query."""
     from . import osm_downloader as _osm
     if getattr(_osm, "_bridges_patched", False):
         return
@@ -1432,7 +1593,11 @@ def _patch_overpass_query():
         q = _orig(lat_min, lat_max, lon_min, lon_max, *a, **k)
         bbox = f"{lat_min},{lon_min},{lat_max},{lon_max}"
         extra = (
-            f'  way["waterway"="river"]({bbox});'
+            f'  way["waterway"="river"]({bbox});\n'
+            f'  way["highway"~"^(motorway|trunk|motorway_link|trunk_link|primary|'
+            f'primary_link|secondary|secondary_link|tertiary|tertiary_link|'
+            f'unclassified|residential|road)$"]({bbox});\n'
+            f'  way["railway"="rail"]({bbox});'
         )
         return q.replace("\n);", "\n" + extra + "\n);", 1)
 
