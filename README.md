@@ -48,14 +48,13 @@ python -m condor_buildings.main \
 - **Per-farm objects, Flip, Merge, LOD** — each plant is a separate `Solar_<patch>_n` object (so you can **Flip** one farm's tilt/posts on its own); **Merge** joins them into `solar_farm`. LOD0 → with posts, LOD1 → without posts, Both LODs → both collections.
 - **Cache** — tiles + `esri_sat/mask/overlay/poly.jpg` go to `Working/Autogen/condor_esri_cache/<patch>/`; the raw tiles are deleted after a successful import. ⚠️ **Generate Buildings clears the whole patch collection**, so build the solars **after** the buildings.
 - **Texture** — `solar.dds` ships in `assets/3Dobjects/` and is copied automatically into `Working/Autogen/Textures/` on import (skipped if already there), like `Bridge.dds`; the exporter writes the `condor_solar` material + `solar.dds` into the MTL. In the OBJ, `solar_farm` is written before `wind_turbine` / `transmitter` / `pylones` (`pylones` stays last).
-- **"single" checkbox removed** — a missing `map_<patch>.osm` is now **always** downloaded automatically for chimneys / bridges / transmitters / solar.
+
 
 **New in v0.9.7 — bridges crossings, cleanup buttons & duplicate-safe import:**
 - **Bridges over motorway crossings (overpasses)** — besides water and valleys, a bridge is now built for a **grade separation that involves a motorway** (motorway over road/rail/motorway, or road/rail over a motorway). Road×road / road×rail / rail×rail (yards, stations) are skipped. The OSM download automatically also fetches **rivers** and **ground (non-bridge) motorways/roads/rails** for crossing detection.
 - **Bridge decks & pillars refined** — two ~parallel decks that stack (dual carriageway / "V" ramps) collapse to one; a bowed-up **overpass gets no pillars** (a pier would land on the road below), a bowed-up **river bridge gets exactly 2 pillars** at 1/3 and 2/3.
 - **Duplicate-safe imports** — Import Patch / Bridges / Chimneys / Transmitters no longer create duplicates: an object type already present for a patch+LOD (imported separately **or baked into the OBJ**) isn't added again; Import Patch drops OBJ-baked extras that already exist separately. Import Patch OBJ axis is now always `forward=X, up=Z` (header ignored) so c3d-derived OBJs import upright.
 - **Two trash buttons** — a **terrain** trash (next to Export Terrain and next to the range *terrain* checkbox) removes patch terrain objects from the scene; an **OSM files** trash (under MSprint) deletes `map_<patch>.osm` (+ `.ori` + MSprint copy). Both work in Single Patch and Range.
-- **"single" checkbox** (next to *Other objects*) — lets chimneys/bridges/transmitters download a missing OSM on demand; otherwise missing-OSM patches are reported and skipped.
 - **Merge Chimneys** now enables only for freshly-imported `Chimney_...` objects (like Merge Transmitters) — OBJ-baked/merged chimneys don't light it.
 
 **New in v0.9.6 — scenery objects update (v0.9.1 → v0.9.6):**
@@ -68,7 +67,6 @@ python -m condor_buildings.main \
 - **File-mode / export overhaul** — the "Import to Blender off" path now routes through Blender so exported roofs are correct (double-sided gabled, clean hipped) for LOD0 **and** LOD1; optional `.mtl` ("add MTL"), per-patch `o<patch>.log`, and a summary `generate_log.txt`.
 - **Chimneys** — batched straight into `o<patch>.obj`, model chosen by `material` / `height`, no more accidental "cylinder" building from `man_made=chimney`, optional `chimney.osm` injection.
 - **Overpass resilience** — three redundant Overpass servers, a shorter 60 s timeout for the small aeroway query, and a 3×3 patch cache in `airports.json` (grouped by X for readability) so repeated/failed airport queries no longer stall generation.
-- **English codebase** — remaining Czech comments and Blender user messages translated to English.
 
 **New in v0.9.0 — milestone release:**
 - **Stable build of the OSM → Condor building generator.** Consolidates the v0.8.x stabilization series into a single milestone: courtyard roofs open as holes, gable-end walls face outward, degenerate geometry is cleaned out of both the Blender mesh and the exported c3d, UV mapping is applied correctly, materials self-heal when their texture appears, and low-voltage power lines are filtered. The generator produces textured houses, apartment/commercial highrise, industrial, and flat-roofed buildings (gabled / hipped / polyskel / flat roofs) with Condor-ready OBJ + MTL output for LOD0 and LOD1. See the **Project Status** section below for the full capability list.
