@@ -831,6 +831,18 @@ class CONDOR_OT_import_buildings(Operator):
                         except Exception as e:
                             errors.append(f"Patch {patch_id}: LOD1 import failed: {e}")
 
+                    # --- SUBSTATION OUTLINE add-on (removable: delete
+                    # blender/substation.py). Draws the OSM power=substation fence as its
+                    # own object. Guarded: a failure here never affects the patch.
+                    try:
+                        from . import substation
+                        substation.build_for_patch(
+                            patch_id, osm_path, paths, collection_name,
+                        )
+                    except Exception as e:
+                        print(f"[Condor] substation outline skipped: {e}")
+                    # --- END SUBSTATION OUTLINE ---
+
                     # Also import LOD1 if BOTH
                     if props.output_lod == 'BOTH' and result.grouped_lod1:
                         collection_name_lod1 = f"Condor_{props.landscape_name}_{patch_id}_LOD1"
@@ -944,6 +956,11 @@ class CONDOR_OT_import_buildings(Operator):
         props.last_import_buildings = total_buildings
         props.last_import_time_ms = elapsed_ms
         props.last_patches_processed = patches_processed
+
+        # --- Az je vsechno vygenerovane, smaz pomocny obrys rozvodny. Slouzi jen
+        # behem generovani (portaly se podle nej umistuji) a do vysledku nepatri.
+        for _o in [o for o in bpy.data.objects if o.name.startswith("substation_")]:
+            bpy.data.objects.remove(_o, do_unlink=True)
 
         # Report results
         if errors:

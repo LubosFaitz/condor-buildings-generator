@@ -61,6 +61,7 @@ PYLON_FILES = {
     "Pylon_Large": "pylon_large.obj",
     "Pylon_Medium": "pylon_medium.obj",
     "Pylon_Small": "pylon_small.obj",
+    "Pylon_Substation": "pylon_substation.obj",
     # Wind turbine split into a static tower+nacelle and a rotor (blades) so the
     # blades can be spun to a random angle per turbine; merged back into one object.
     "Wind_Turbine_Tower": "turbine_tower.obj",
@@ -74,6 +75,7 @@ PYLON_FILES = {
 OPTIONAL_PYLON_FILES = {
     "Pylon_Large_Low": "pylon_large_low.obj",
     "Pylon_Medium_Low": "pylon_medium_low.obj",
+    "Pylon_Substation_Low": "pylon_substation_low.obj",
 }
 
 # Rotor hub in the turbine template frame: the blades spin around the Y axis
@@ -104,6 +106,11 @@ CONDUCTOR_ATTACH: Dict[str, List[Tuple[float, float, float]]] = {
     "Pylon_Small": [
         (-0.75, 0.0, 5.55),
         (0.75, 0.0, 5.55),
+    ],
+    "Pylon_Substation": [
+        (-4.61, 4.64, 14.07),
+        (0.00, 4.64, 14.07),
+        (4.61, 4.64, 14.07),
     ],
 }
 
@@ -142,6 +149,21 @@ CABLE_UV_SPREAD = 0.012
 
 # Place a tower a tiny bit into the ground so feet don't float on slopes.
 TOWER_SINK = 0.3
+
+# The substation outline, drawn by the powerline module as its OWN object.
+SUBSTATION_OUTLINE_NAME = "substation"
+SUBSTATION_OUTLINE_WIDTH = 3.0     # width of the traced fence line, metres
+SUBSTATION_OUTLINE_LIFT = 1.0      # lifted off the ground so it does not z-fight
+
+# Two large/medium towers must stand at least this far apart (centre to centre). A pylon
+# is ~27.7 m wide, so 30 m leaves ~2.3 m between the arm tips -- they never touch.
+MIN_TOWER_DIST = 31.5
+# ...but the pushing-apart is done ONLY near a substation (within this of its centre).
+# Out in the country the lines are left exactly as OSM has them -- nothing is moved.
+SUBSTATION_ZONE_RADIUS = 1000.0
+# A large/medium tower this close to the substation fence is an ENTRY pylon and is turned
+# toward the fence (crossarm blended with the nearest fence edge).
+SUBSTATION_ENTRY_DIST = 150.0
 
 # --- Aviation warning balls (on the TOP conductor) ---
 # Ball model (origin = centre). Diameter + cable spacing per case:
@@ -287,6 +309,100 @@ def _terrain_z(terrain: TerrainMesh, x: float, y: float) -> Optional[float]:
     if cx != x or cy != y:
         return query(cx, cy)
     return None
+
+
+def _point_in_polys(x: float, y: float, polys) -> bool:
+    """True if (x, y) lies inside any of the substation outlines (ray casting)."""
+    for ring in polys or ():
+        inside = False
+        n = len(ring)
+        jx, jy = ring[-1]
+        for ix, iy in ring:
+            if ((iy > y) != (jy > y)) and \
+               (x < (jx - ix) * (y - iy) / (jy - iy + 1e-12) + ix):
+                inside = not inside
+            jx, jy = ix, iy
+        if inside:
+            return True
+    return False
+
+
+def _gantry_points_inside(gx: float, gy: float, yaw: float, polys) -> bool:
+    """True if the gantry center and its physical bounds are inside the substation outlines."""
+    c, s = math.cos(yaw), math.sin(yaw)
+    # Check center and the four extremities of the Pylon_Substation template bounding box
+    # (width is ~12.2m: X from -6.1 to 6.1; depth is ~5.5m: Y from -0.5 to 5.0).
+    points = [
+        (gx, gy),                           # center
+        (gx - 6.1 * c, gy - 6.1 * s),       # left tip
+        (gx + 6.1 * c, gy + 6.1 * s),       # right tip
+        (gx - 5.0 * s, gy + 5.0 * c),       # front
+        (gx + 0.5 * s, gy - 0.5 * c),       # back
+    ]
+    return all(_point_in_polys(px, py, polys) for px, py in points)
+
+
+def _gantry_corners(gx: float, gy: float, yaw: float) -> List[Tuple[float, float]]:
+    """Return the 4 world-space corners of the gantry rectangle."""
+    c, s = math.cos(yaw), math.sin(yaw)
+    # Local corners:
+    local_corners = [(-6.1, -0.5), (6.1, -0.5), (6.1, 5.0), (-6.1, 5.0)]
+    world_corners = []
+    for lx, ly in local_corners:
+        wx = gx + lx * c - ly * s
+        wy = gy + lx * s + ly * c
+        world_corners.append((wx, wy))
+    return world_corners
+
+
+def _rects_intersect(rect1: List[Tuple[float, float]], rect2: List[Tuple[float, float]]) -> bool:
+    """Check if two 2D oriented rectangles intersect using the Separating Axis Theorem (SAT)."""
+    for rect in (rect1, rect2):
+        for i in range(4):
+            p1 = rect[i]
+            p2 = rect[(i + 1) % 4]
+            # Normal to the edge
+            nx = -(p2[1] - p1[1])
+            ny = p2[0] - p1[0]
+            dist = math.hypot(nx, ny)
+            if dist < 1e-9:
+                continue
+            nx /= dist
+            ny /= dist
+            
+            proj1 = [v[0] * nx + v[1] * ny for v in rect1]
+            proj2 = [v[0] * nx + v[1] * ny for v in rect2]
+            
+            min1, max1 = min(proj1), max(proj1)
+            min2, max2 = min(proj2), max(proj2)
+            
+            if max1 < min2 - 1e-3 or max2 < min1 - 1e-3:
+                return False  # Separating axis found
+    return True  # No separating axis found, they intersect
+
+
+def _segments_intersect(a: Tuple[float, float], b: Tuple[float, float],
+                        c: Tuple[float, float], d: Tuple[float, float]) -> bool:
+    """True if line segments AB and CD intersect in 2D."""
+    def ccw(A, B, C):
+        return (C[1] - A[1]) * (B[0] - A[0]) > (B[1] - A[1]) * (C[0] - A[0])
+    return ccw(a, c, d) != ccw(b, c, d) and ccw(a, b, c) != ccw(a, b, d)
+
+
+def _gantry_collides_with_tower(gx: float, gy: float, yaw: float, tx: float, ty: float, r: float) -> bool:
+    """Check if a gantry rectangle intersects a circle (tower with radius r)."""
+    c, s = math.cos(yaw), math.sin(yaw)
+    dx = tx - gx
+    dy = ty - gy
+    # Local coordinates of tower center relative to gantry
+    lx = dx * c + dy * s
+    ly = -dx * s + dy * c
+    # Closest point on gantry AABB (X in [-6.1, 6.1], Y in [-0.5, 5.0])
+    cx = max(-6.1, min(6.1, lx))
+    cy = max(-0.5, min(5.0, ly))
+    # Distance from tower center to closest point
+    dist = math.hypot(lx - cx, ly - cy)
+    return dist < r
 
 
 def _foot_z(terrain: TerrainMesh, x: float, y: float) -> float:
@@ -558,6 +674,41 @@ class PowerlineMeshStats:
     balls: int = 0
 
 
+def generate_substation_outline(substation_polygons, terrain: TerrainMesh) -> MeshData:
+    """Trace the substation fence(s) as a narrow ribbon -- its OWN object, built here in
+    the powerline module. Empty mesh when the patch has no substation."""
+    mesh = MeshData(osm_id=SUBSTATION_OUTLINE_NAME)
+    half = SUBSTATION_OUTLINE_WIDTH / 2.0
+    for ring in (substation_polygons or []):
+        pts = list(ring)
+        if len(pts) >= 2 and math.dist(pts[0], pts[-1]) < 1e-6:
+            pts.pop()
+        if len(pts) < 3:
+            continue
+        n = len(pts)
+        for i in range(n):
+            ax, ay = pts[i]
+            bx, by = pts[(i + 1) % n]
+            dx, dy = bx - ax, by - ay
+            d = math.hypot(dx, dy)
+            if d < 1e-6:
+                continue
+            nx, ny = -dy / d * half, dx / d * half
+            za = _terrain_z(terrain, ax, ay)
+            zb = _terrain_z(terrain, bx, by)
+            za = (terrain.z_min if za is None else za) + SUBSTATION_OUTLINE_LIFT
+            zb = (terrain.z_min if zb is None else zb) + SUBSTATION_OUTLINE_LIFT
+            base = len(mesh.vertices)
+            mesh.vertices.extend([
+                (ax + nx, ay + ny, za), (ax - nx, ay - ny, za),
+                (bx - nx, by - ny, zb), (bx + nx, by + ny, zb),
+            ])
+            mesh.uvs.extend([(0.02, 0.02), (0.03, 0.02), (0.03, 0.03), (0.02, 0.03)])
+            mesh.faces.append((base, base + 1, base + 2))
+            mesh.faces.append((base, base + 2, base + 3))
+    return mesh
+
+
 def generate_powerline_meshes(
     lines,
     terrain: TerrainMesh,
@@ -566,6 +717,7 @@ def generate_powerline_meshes(
     draw_cables: bool = True,
     draw_balls: bool = False,
     airport_zones=None,
+    substation_polygons=None,
 ) -> Tuple[MeshData, MeshData, PowerlineMeshStats]:
     """
     Build the single ``pylones`` mesh (towers + cables) for a list of PowerLines.
@@ -587,6 +739,12 @@ def generate_powerline_meshes(
     """
     if templates is None:
         templates = load_pylon_templates()
+
+    # DIAGNOSTIC: how many substation outlines reached the powerline generator. If this
+    # says 0, the spacing/entry-orientation cannot run (no fence to work from).
+    logger.info("POWERLINES: received %d substation outline(s)",
+                len(substation_polygons or []))
+    print(f"[Condor] POWERLINES dostal {len(substation_polygons or [])} obrys(u) rozvodny")
 
     mesh = MeshData(osm_id=PYLON_MATERIAL)    # LOD0: all towers + cables + balls
     mesh1 = MeshData(osm_id=PYLON_MATERIAL)   # LOD1: large+medium pylons only
@@ -618,16 +776,34 @@ def generate_powerline_meshes(
             logger.warning("Warning balls: could not load %s: %s", WARNING_BALL_FILE, e)
             ball_tmpl = None
 
-    for line in lines:
-        pts = line.points
-        if len(pts) < 2:
+    # Crossarm yaw per SHARED OSM node (large/medium only). Several lines meeting at the
+    # SAME node share one tower, turned to the AVERAGE of their directions (mean on the
+    # doubled angle, because a pylon is symmetric). A node used by a single line keeps its
+    # own yaw. A weak resultant (lines fan out / cross) -> 45 deg bisector, so no line is
+    # squeezed. Small pylons (minor_line) are never merged.
+    _pos_yaws: Dict[Tuple[float, float], List[float]] = {}
+    for _line in lines:
+        _p = _line.points
+        if len(_p) < 2 or _line.pylon_type == "Pylon_Small":
             continue
-        tmpl = templates.get(line.pylon_type)
-        if tmpl is None:
-            logger.warning("No template for %s (way %s)", line.pylon_type, line.way_id)
+        _lxy = [(q.x, q.y) for q in _p]
+        for _j in range(len(_p)):
+            _key = (round(_lxy[_j][0], 1), round(_lxy[_j][1], 1))
+            _pos_yaws.setdefault(_key, []).append(_yaw_at(_lxy, _j))
+    shared_yaw: Dict[Tuple[float, float], float] = {}
+    for _key, _ys in _pos_yaws.items():
+        if len(_ys) == 1:
+            shared_yaw[_key] = _ys[0]
             continue
+        _sx = sum(math.cos(2.0 * a) for a in _ys)
+        _sy = sum(math.sin(2.0 * a) for a in _ys)
+        if math.hypot(_sx, _sy) < 0.6 * len(_ys):
+            shared_yaw[_key] = _ys[0] + math.pi / 4.0
+        else:
+            shared_yaw[_key] = 0.5 * math.atan2(_sy, _sx)
 
-        # A node is "placed" if it's in-patch or adjacent to an in-patch node.
+    def _placed_flags(pts):
+        """A node is 'placed' if in-patch or adjacent to an in-patch node."""
         n = len(pts)
         placed = [False] * n
         for j, p in enumerate(pts):
@@ -637,79 +813,903 @@ def generate_powerline_meshes(
                     placed[j - 1] = True
                 if j < n - 1:
                     placed[j + 1] = True
+        return placed
+
+    def _span_cables(mesh_, attach_local, sag, spans_xyz):
+        """Draw one line's cables. Each conductor attaches to the ARM TIP on the SAME
+        side of the span at both ends, so the three never cross even at a turned tower."""
+        for (xa, ya, za, yawa, xb, yb, zb, yawb) in spans_xyz:
+            ca, sa = math.cos(yawa), math.sin(yawa)
+            cb, sb = math.cos(yawb), math.sin(yawb)
+            _sl = math.hypot(xb - xa, yb - ya) or 1.0
+            px, py = -(yb - ya) / _sl, (xb - xa) / _sl
+            for (ax, ay, az) in attach_local:
+                rax, ray = _rotz(ax, ay, ca, sa)
+                side_a = rax * px + ray * py
+                rbx, rby = _rotz(ax, ay, cb, sb)
+                if (rbx * px + rby * py) * side_a < 0.0:
+                    rbx, rby = _rotz(-ax, -ay, cb, sb)
+                _add_cable(mesh_, (rax + xa, ray + ya, az + za),
+                           (rbx + xb, rby + yb, az + zb), sag)
+                stats.cables += 1
+
+    def _span_cables_mixed(mesh_, attach_a, attach_b, sag, span_xyz):
+        """Draw one span whose two ends use DIFFERENT attach points (e.g. a line
+        pylon at one end, a substation portal at the other). Conductors are paired
+        by side (left-to-left ... right-to-right) so they stay parallel and never
+        cross, even though the two crossarms have different widths."""
+        (xa, ya, za, yawa, xb, yb, zb, yawb) = span_xyz
+        ca, sa = math.cos(yawa), math.sin(yawa)
+        cb, sb = math.cos(yawb), math.sin(yawb)
+        _sl = math.hypot(xb - xa, yb - ya) or 1.0
+        px, py = -(yb - ya) / _sl, (xb - xa) / _sl      # unit vector across the span
+
+        # Na portal jdou jen vodice z RAMEN. Zemnici drat (ten NEJVYSSI na vrsku
+        # stozaru) na portal nepatri -- ten vede po vrsku z pylonu na pylon a u
+        # portalu konci. Medium ma 4 uchyty, portal 3, takze bez tohohle by se
+        # parovanim podle strany zahodilo nektere rameno a zemnici by naopak vedl
+        # na portal.
+        def _drop_earth(att, other):
+            if len(att) <= len(other):
+                return att
+            zmax = max(a[2] for a in att)
+            return [a for a in att if a[2] < zmax - 1e-6]
+
+        attach_a = _drop_earth(attach_a, attach_b)
+        attach_b = _drop_earth(attach_b, attach_a)
+
+        A, B = [], []
+        for (ax, ay, az) in attach_a:
+            rx, ry = _rotz(ax, ay, ca, sa)
+            A.append((rx * px + ry * py, rx, ry, az))   # (side, rx, ry, z)
+        for (bx, by, bz) in attach_b:
+            rx, ry = _rotz(bx, by, cb, sb)
+            B.append((rx * px + ry * py, rx, ry, bz))
+        A.sort(key=lambda t: t[0])
+        B.sort(key=lambda t: t[0])
+        for (sA, rax, ray, az), (sB, rbx, rby, bz) in zip(A, B):
+            _add_cable(mesh_, (rax + xa, ray + ya, az + za),
+                       (rbx + xb, rby + yb, bz + zb), sag)
+            stats.cables += 1
+
+    # --- Phase 1: decide WHERE the large/medium towers go, without stamping yet. -------
+    # One tower per unique OSM node (a node shared by several lines -> one tower). Small
+    # pylons are stamped right here, as before -- they are not spaced or merged.
+    towers: Dict[Tuple[float, float], List] = {}   # key -> [x, y, yaw, tmpl, tmpl1]
+    line_spans: List[Tuple] = []                    # (attach_local, sag, [(keyA,keyB),...])
+    # Sloupy, pres ktere vedeni podle OSM pokracuje DOVNITR rozvodny -> z nich se
+    # napoji portal. Poznaji se tak, ze sousedni uzel teze cesty lezi uvnitr obrysu.
+    # Male pylony sem nepatri.
+    _feed_keys = set()
+
+    for line in lines:
+        pts = line.points
+        if len(pts) < 2:
+            continue
+        tmpl = templates.get(line.pylon_type)
+        if tmpl is None:
+            logger.warning("No template for %s (way %s)", line.pylon_type, line.way_id)
+            continue
+
+        n = len(pts)
+        placed = _placed_flags(pts)
         if not any(placed):
             continue
 
         xy = [(p.x, p.y) for p in pts]
         attach_local = CONDUCTOR_ATTACH.get(line.pylon_type, [])
-        # LOD1 gets only large/medium pylons (no small, no cables, no balls), and
-        # uses the low-poly variant if one exists (e.g. pylon_large_low.obj).
         is_small = (line.pylon_type == "Pylon_Small")
         tmpl1 = templates.get(line.pylon_type + "_Low", tmpl)
+        sag = SAG_BY_TYPE.get(line.pylon_type, DEFAULT_SAG)
 
-        # World transform per node (only computed for placed nodes).
-        node_world: Dict[int, Tuple[float, float, float, float]] = {}  # j -> (x,y,foot_z,yaw)
+        # Small pylons: stamp now, on their own nodes, and draw their cables inline.
+        if is_small:
+            nw: Dict[int, Tuple[float, float, float, float]] = {}
+            for j in range(n):
+                if not placed[j]:
+                    continue
+                x, y = xy[j]
+                foot_z = _foot_z(terrain, x, y)
+                yaw = _yaw_at(xy, j)
+                nw[j] = (x, y, foot_z, yaw)
+                _place_pylon(mesh, tmpl, x, y, foot_z, yaw)
+                stats.towers += 1
+            if nw:
+                stats.lines_with_geometry += 1
+            if draw_cables and attach_local:
+                spans_xyz = [(*nw[j], *nw[j + 1]) for j in range(n - 1)
+                             if j in nw and (j + 1) in nw]
+                _span_cables(mesh, attach_local, sag, spans_xyz)
+            continue
+
+        # Large/medium: no tower inside a substation yard (only small may stand there).
+        if substation_polygons:
+            # Ktery uzel teto cesty lezi UVNITR dvora. Sloup, ktery je venku, ale jehoz
+            # soused na teze ceste je uvnitr, je ten, PRES ktery vedeni do rozvodny
+            # pokracuje -> prave z nej se napoji portal.
+            _in = [_point_in_polys(xy[j][0], xy[j][1], substation_polygons)
+                   for j in range(n)]
+            if not is_small:
+                for j in range(n):
+                    if _in[j]:
+                        continue
+                    if (j > 0 and _in[j - 1]) or (j < n - 1 and _in[j + 1]):
+                        _feed_keys.add((round(xy[j][0], 1), round(xy[j][1], 1)))
+            for j in range(n):
+                if placed[j] and _in[j]:
+                    placed[j] = False
+            # The line ends AT the fence: drop any tower left with no neighbour to string
+            # a cable to (an unconnected pylon).
+            for _ in range(n):
+                changed = False
+                for j in range(n):
+                    if not placed[j]:
+                        continue
+                    if not ((j > 0 and placed[j - 1]) or (j < n - 1 and placed[j + 1])):
+                        placed[j] = False
+                        changed = True
+                if not changed:
+                    break
+            if not any(placed):
+                continue
+
+        node_key: Dict[int, Tuple[float, float]] = {}
         for j in range(n):
             if not placed[j]:
                 continue
             x, y = xy[j]
-            foot_z = _foot_z(terrain, x, y)
-            yaw = _yaw_at(xy, j)
-            node_world[j] = (x, y, foot_z, yaw)
-            _place_pylon(mesh, tmpl, x, y, foot_z, yaw)
-            if not is_small:
-                _place_pylon(mesh1, tmpl1, x, y, foot_z, yaw)
-            stats.towers += 1
+            key = (round(x, 1), round(y, 1))
+            if key not in towers:
+                towers[key] = [x, y, shared_yaw.get(key, _yaw_at(xy, j)), tmpl, tmpl1]
+            node_key[j] = key
+        if node_key:
+            stats.lines_with_geometry += 1
+        spans = [(node_key[j], node_key[j + 1]) for j in range(n - 1)
+                 if j in node_key and (j + 1) in node_key
+                 and node_key[j] != node_key[j + 1]]
+        line_spans.append([attach_local, sag, spans, line])
+    # --- Phase 1.5: Identify terminal pylons (portals will be added at the end) --------
+    _terminal_pylons = set()
+    _gantry_keys = set()   # portal keys -> their cables use the portal's own attach points
+    _edges = []
+    for _ring in (substation_polygons or []):
+        _m = len(_ring)
+        for _i in range(_m):
+            _ax, _ay = _ring[_i]
+            _bx, _by = _ring[(_i + 1) % _m]
+            if math.hypot(_bx - _ax, _by - _ay) > 1e-6:
+                _edges.append((_ax, _ay, _bx, _by))
 
-        had_geometry = bool(node_world)
+    if substation_polygons and _edges:
+        _neighbours_temp = {}
+        for (_a, _s, _sp, _l) in line_spans:
+            for (ka, kb) in _sp:
+                _neighbours_temp.setdefault(ka, []).append(kb)
+                _neighbours_temp.setdefault(kb, []).append(ka)
+        for k in towers:
+            if len(_neighbours_temp.get(k, [])) == 1:
+                _terminal_pylons.add(k)
+    # --- Phase 2: push towers apart so none are closer than MIN_TOWER_DIST. -------------
+    _neighbours: Dict[Tuple[float, float], List[Tuple[float, float]]] = {}
+    for (_a, _s, _sp, _l) in line_spans:
+        for (ka, kb) in _sp:
+            _neighbours.setdefault(ka, []).append(kb)
+            _neighbours.setdefault(kb, []).append(ka)
 
-        if draw_cables and attach_local:
-            sag = SAG_BY_TYPE.get(line.pylon_type, DEFAULT_SAG)
-            for j in range(n - 1):
-                if j not in node_world or (j + 1) not in node_world:
+    _sub_centres = []
+    for _ring in (substation_polygons or []):
+        _rxs = [p[0] for p in _ring]
+        _rys = [p[1] for p in _ring]
+        _sub_centres.append((sum(_rxs) / len(_rxs), sum(_rys) / len(_rys)))
+
+    def _near_substation(x, y):
+        return any(math.hypot(x - cx, y - cy) < SUBSTATION_ZONE_RADIUS
+                   for (cx, cy) in _sub_centres)
+
+    if _sub_centres:
+        _keys = list(towers)
+        _cell = MIN_TOWER_DIST
+        _all_spans = [(ka, kb) for (_a, _s, sp, _l) in line_spans for (ka, kb) in sp]
+        _radius: Dict[Tuple[float, float], float] = {}
+        for k in _keys:
+            _tm = towers[k][3]
+            if _tm.verts:
+                _rx = [v[0] for v in _tm.verts]
+                _ry = [v[1] for v in _tm.verts]
+                _radius[k] = max(max(_rx) - min(_rx), max(_ry) - min(_ry)) / 2.0
+            else:
+                _radius[k] = 0.0
+
+        # Both jobs run TOGETHER in one loop until settled: (a) no two towers closer than
+        # 30 m, (b) no cable running through a tower. Doing them one after the other let
+        # (b) shove towers back under 30 m -- that was the 25.5 m gap. Now each pass fixes
+        # what the other disturbed, until nothing moves.
+        for _ in range(300):
+            _moved = False
+
+            # (a) push apart any pair closer than 30 m (zone towers only).
+            _grid: Dict[Tuple[int, int], List[Tuple[float, float]]] = {}
+            for k in _keys:
+                t = towers[k]
+                _grid.setdefault((int(t[0] // _cell), int(t[1] // _cell)), []).append(k)
+            for k in _keys:
+                t = towers[k]
+                gx, gy = int(t[0] // _cell), int(t[1] // _cell)
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        for k2 in _grid.get((gx + dx, gy + dy), ()):
+                            if k2 <= k:
+                                continue
+                            t2 = towers[k2]
+                            ddx, ddy = t2[0] - t[0], t2[1] - t[1]
+                            d = math.hypot(ddx, ddy)
+                            if d >= MIN_TOWER_DIST:
+                                continue
+                            a_in = _near_substation(t[0], t[1])
+                            b_in = _near_substation(t2[0], t2[1])
+                            if not a_in and not b_in:
+                                continue
+                            if d <= 1e-9:
+                                ux, uy, d = 1.0, 0.0, 1e-9
+                            else:
+                                ux, uy = ddx / d, ddy / d
+                            gap = MIN_TOWER_DIST - d
+                            if a_in and b_in:
+                                p = gap / 2.0 + 0.05
+                                t[0] -= ux * p
+                                t[1] -= uy * p
+                                t2[0] += ux * p
+                                t2[1] += uy * p
+                            elif a_in:
+                                t[0] -= ux * (gap + 0.05)
+                                t[1] -= uy * (gap + 0.05)
+                            else:
+                                t2[0] += ux * (gap + 0.05)
+                                t2[1] += uy * (gap + 0.05)
+                            _moved = True
+
+            # (b) push a zone tower sideways off any cable of another span running through it.
+            for k in _keys:
+                t = towers[k]
+                if not _near_substation(t[0], t[1]):
                     continue
-                xa, ya, za, yawa = node_world[j]
-                xb, yb, zb, yawb = node_world[j + 1]
-                ca, sa = math.cos(yawa), math.sin(yawa)
-                cb, sb = math.cos(yawb), math.sin(yawb)
-                for (ax, ay, az) in attach_local:
-                    rax, ray = _rotz(ax, ay, ca, sa)
-                    rbx, rby = _rotz(ax, ay, cb, sb)
-                    pa = (rax + xa, ray + ya, az + za)
-                    pb = (rbx + xb, rby + yb, az + zb)
-                    _add_cable(mesh, pa, pb, sag)
-                    stats.cables += 1
+                if k in _terminal_pylons:
+                    continue
+                keep = MIN_TOWER_DIST
+                for (ka, kb) in _all_spans:
+                    if k == ka or k == kb:
+                        continue
+                    ax, ay = towers[ka][0], towers[ka][1]
+                    bx, by = towers[kb][0], towers[kb][1]
+                    vx, vy = bx - ax, by - ay
+                    L2 = vx * vx + vy * vy
+                    if L2 < 1e-9:
+                        continue
+                    s = ((t[0] - ax) * vx + (t[1] - ay) * vy) / L2
+                    if not (0.0 < s < 1.0):
+                        continue
+                    cxp, cyp = ax + s * vx, ay + s * vy
+                    ox, oy = t[0] - cxp, t[1] - cyp
+                    d = math.hypot(ox, oy)
+                    if d >= keep:
+                        continue
+                    if d < 1e-9:
+                        nlen = math.sqrt(L2)
+                        ox, oy, d = -vy / nlen, vx / nlen, 1.0
+                    t[0] = cxp + ox / d * keep
+                    t[1] = cyp + oy / d * keep
+                    _moved = True
 
-        # Warning balls on the TOP conductor (per span; merged into the same mesh).
+            if not _moved:
+                break
+                
+    # --- Entry pylons: turn the last towers before the fence TOWARD the outline. --------
+    # The large/medium pylon just outside a substation, from which the line runs into the
+    # yard, is turned toward the fence: its crossarm is blended halfway between the line's
+    # own direction and the nearest fence edge. A line meeting the fence square stays
+    # square; one arriving at an angle ends up ~45 deg to the fence.
+    _edges = []
+    for _ring in (substation_polygons or []):
+        _m = len(_ring)
+        for _i in range(_m):
+            _ax, _ay = _ring[_i]
+            _bx, _by = _ring[(_i + 1) % _m]
+            if math.hypot(_bx - _ax, _by - _ay) > 1e-6:
+                _edges.append((_ax, _ay, _bx, _by))
+
+    def _fence_dist(x, y):
+        best = 1e18
+        for (ax, ay, bx, by) in _edges:
+            vx, vy = bx - ax, by - ay
+            L2 = vx * vx + vy * vy
+            if L2 < 1e-9:
+                continue
+            s = max(0.0, min(1.0, ((x - ax) * vx + (y - ay) * vy) / L2))
+            best = min(best, math.hypot(x - (ax + s * vx), y - (ay + s * vy)))
+        return best
+
+    if _edges:
+        # Which towers each tower is cabled to (to read the incoming line direction).
+        _neighbours: Dict[Tuple[float, float], List[Tuple[float, float]]] = {}
+        for (_a, _s, _sp, _l) in line_spans:
+            for (ka, kb) in _sp:
+                _neighbours.setdefault(ka, []).append(kb)
+                _neighbours.setdefault(kb, []).append(ka)
+
+        for k, t in towers.items():
+            if "substation" in t[3].name.lower():
+                continue
+            if _fence_dist(t[0], t[1]) >= SUBSTATION_ENTRY_DIST:
+                continue                      # not an entry pylon
+            nbrs = _neighbours.get(k)
+            if not nbrs:
+                continue
+            # Incoming line = toward the neighbour FURTHEST from the fence (the run out
+            # into the country). The crossarm is built PERPENDICULAR to it, so the three
+            # conductors always spread across -- never collapse into one line.
+            nb = max(nbrs, key=lambda kk: _fence_dist(towers[kk][0], towers[kk][1]))
+            cdx, cdy = towers[nb][0] - t[0], towers[nb][1] - t[1]
+            base = math.atan2(cdy, cdx) + math.pi / 2.0
+
+            # Nearest fence edge direction, to lean the crossarm toward the outline.
+            best_dir, bd = None, SUBSTATION_ENTRY_DIST
+            for (ax, ay, bx, by) in _edges:
+                vx, vy = bx - ax, by - ay
+                L2 = vx * vx + vy * vy
+                if L2 < 1e-9:
+                    continue
+                s = max(0.0, min(1.0, ((t[0] - ax) * vx + (t[1] - ay) * vy) / L2))
+                d = math.hypot(t[0] - (ax + s * vx), t[1] - (ay + s * vy))
+                if d < bd:
+                    bd, best_dir = d, math.atan2(vy, vx)
+            if best_dir is None:
+                t[2] = base
+                continue
+            # Lean the crossarm from perpendicular-to-line toward the fence, but no more
+            # than 45 deg -- so a square approach faces the fence and an angled one ends
+            # up ~45 deg, and the conductors never line up.
+            diff = best_dir - base
+            while diff > math.pi / 2.0:
+                diff -= math.pi
+            while diff <= -math.pi / 2.0:
+                diff += math.pi
+            rot = max(-math.pi / 4.0, min(math.pi / 4.0, diff))
+            t[2] = base + rot
+
+        # Line the entry pylons up 30 m apart ALONG the fence they face, so the last
+        # towers before the substation stand in a neat row, 30 m centre to centre.
+        _groups: Dict[int, List[Tuple[float, float]]] = {}
+        for k, t in towers.items():
+            if "substation" in t[3].name.lower():
+                continue
+            bi, bd = None, SUBSTATION_ENTRY_DIST
+            for ei, (ax, ay, bx, by) in enumerate(_edges):
+                vx, vy = bx - ax, by - ay
+                L2 = vx * vx + vy * vy
+                if L2 < 1e-9:
+                    continue
+                s = max(0.0, min(1.0, ((t[0] - ax) * vx + (t[1] - ay) * vy) / L2))
+                d = math.hypot(t[0] - (ax + s * vx), t[1] - (ay + s * vy))
+                if d < bd:
+                    bd, bi = d, ei
+            if bi is not None:
+                _groups.setdefault(bi, []).append(k)
+        for ei, ks in _groups.items():
+            ax, ay, bx, by = _edges[ei]
+            el = math.hypot(bx - ax, by - ay) or 1.0
+            ux, uy = (bx - ax) / el, (by - ay) / el      # unit vector ALONG the fence
+            ks.sort(key=lambda kk: towers[kk][0] * ux + towers[kk][1] * uy)
+            for _ in range(60):
+                moved = False
+                for i in range(len(ks) - 1):
+                    t1, t2 = towers[ks[i]], towers[ks[i + 1]]
+                    a1 = t1[0] * ux + t1[1] * uy
+                    a2 = t2[0] * ux + t2[1] * uy
+                    if a2 - a1 < MIN_TOWER_DIST:
+                        push = (MIN_TOWER_DIST - (a2 - a1)) / 2.0 + 0.05
+                        t1[0] -= ux * push
+                        t1[1] -= uy * push
+                        t2[0] += ux * push
+                        t2[1] += uy * push
+                        moved = True
+                if not moved:
+                    break
+
+    # --- FINAL pass: within 1000 m of a substation, push any tower off a cable of another
+    # line that runs through it. Done LAST so nothing shoves it back onto the cable. -------
+    if _sub_centres:
+        _keysF = list(towers)
+        _spansF = [(ka, kb) for (_a, _s, sp, _l) in line_spans for (ka, kb) in sp]
+        _radF: Dict[Tuple[float, float], float] = {}
+        for k in _keysF:
+            _tm = towers[k][3]
+            if _tm.verts:
+                _rx = [v[0] for v in _tm.verts]
+                _ry = [v[1] for v in _tm.verts]
+                _radF[k] = max(max(_rx) - min(_rx), max(_ry) - min(_ry)) / 2.0
+            else:
+                _radF[k] = 0.0
+        for _ in range(60):
+            _moved = False
+            for k in _keysF:
+                t = towers[k]
+                if not _near_substation(t[0], t[1]):
+                    continue
+                if k in _terminal_pylons:
+                    continue
+                keep = MIN_TOWER_DIST
+                for (ka, kb) in _spansF:
+                    if k == ka or k == kb:
+                        continue
+                    ax, ay = towers[ka][0], towers[ka][1]
+                    bx, by = towers[kb][0], towers[kb][1]
+                    vx, vy = bx - ax, by - ay
+                    L2 = vx * vx + vy * vy
+                    if L2 < 1e-9:
+                        continue
+                    s = ((t[0] - ax) * vx + (t[1] - ay) * vy) / L2
+                    if not (0.0 < s < 1.0):
+                        continue
+                    cxp, cyp = ax + s * vx, ay + s * vy
+                    ox, oy = t[0] - cxp, t[1] - cyp
+                    d = math.hypot(ox, oy)
+                    if d >= keep:
+                        continue
+                    if d < 1e-9:
+                        nlen = math.sqrt(L2)
+                        ox, oy, d = -vy / nlen, vx / nlen, 1.0
+                    t[0] = cxp + ox / d * keep
+                    t[1] = cyp + oy / d * keep
+                    _moved = True
+            if not _moved:
+                break
+
+    # --- Phase 2.5: Add Pylon_Substation gantries inside the substation yard ------------
+    if substation_polygons and _edges:
+        _neighbours_temp = {}
+        for (_a, _s, _sp, _l) in line_spans:
+            for (ka, kb) in _sp:
+                _neighbours_temp.setdefault(ka, []).append(kb)
+                _neighbours_temp.setdefault(kb, []).append(ka)
+
+        gantries_to_add = []
+        for line_idx, (attach_local, sag, spans, line) in enumerate(line_spans):
+            for k in towers:
+                # Portal dostane sloup, kterym vedeni konci (drat z jedne strany),
+                # NEBO sloup, pres ktery vedeni podle OSM pokracuje do rozvodny.
+                if k in _terminal_pylons or k in _feed_keys:
+                    is_in_line = any(k == ka or k == kb for (ka, kb) in spans)
+                    if not is_in_line:
+                        continue
+                    if any(g[3] == k for g in gantries_to_add):
+                        continue                      # portál už tenhle sloup dostal
+                    tx, ty = towers[k][0], towers[k][1]
+                    if not _near_substation(tx, ty):
+                        continue
+                    
+                    _nb = _neighbours_temp.get(k, [])
+                    _nbk = max(_nb, key=lambda kk: _fence_dist(towers[kk][0], towers[kk][1])) if _nb else k
+                    ddx, ddy = tx - towers[_nbk][0], ty - towers[_nbk][1]
+                    _d1 = math.hypot(ddx, ddy) or 1.0
+                    ddx, ddy = ddx / _d1, ddy / _d1
+
+                    # 1. Najdeme nejlepší stěnu na základě směru drátů a kolmice
+                    best_d = 1e18
+                    best_d_comp = 1e18
+                    hit_edge = None
+                    cxp, cyp = tx, ty
+                    best_nx, best_ny = 0.0, -1.0
+                    # Záloha pro případ, že kolmice nepadne na žádnou stěnu celého obrysu.
+                    fb_d = 1e18
+                    fb_d_comp = 1e18
+                    fb_edge = None
+                    fb_nx, fb_ny = 0.0, -1.0
+
+                    for ax, ay, bx, by in _edges:
+                        vx, vy = bx - ax, by - ay
+                        L2 = vx * vx + vy * vy
+                        if L2 < 1e-9: continue
+                        
+                        # Vnitřní normála
+                        _en = math.hypot(vx, vy) or 1.0
+                        n1x, n1y = -vy / _en, vx / _en
+                        mx, my = (ax + bx) / 2.0, (ay + by) / 2.0
+                        if _point_in_polys(mx + 1.0 * n1x, my + 1.0 * n1y, substation_polygons):
+                            nx, ny = n1x, n1y
+                        else:
+                            nx, ny = -n1x, -n1y
+                            
+                        # Sloup musí stát VNĚ téhle zdi (jinak bychom sáhli na protější stěnu).
+                        # Podle směru drátu se zeď NEvyhazuje -- rozhoduje jen kolmice.
+                        if (tx - ax) * nx + (ty - ay) * ny >= 0.0:
+                            continue
+
+                        # Kolmici ze středu sloupu protáhneme jak daleko je potřeba a hledáme
+                        # ji po CELÉM obrysu. Přednost má vždy stěna, na kterou kolmice
+                        # opravdu padne (s v <0,1>), i kdyby byla dál než nejbližší roh.
+                        s = ((tx - ax) * vx + (ty - ay) * vy) / L2
+                        px, py = ax + s * vx, ay + s * vy
+                        d = math.hypot(tx - px, ty - py)
+                        if -0.01 <= s <= 1.01:
+                            d_comp = d - 1e-5 if abs(vy) < abs(vx) else d
+                            if d_comp < best_d_comp:
+                                best_d_comp = d_comp
+                                best_d = d
+                                hit_edge = (ax, ay, bx, by)
+                                best_nx, best_ny = nx, ny
+                        else:
+                            # kolmice míjí tuhle stěnu -> jen záloha (nejbližší bod plotu)
+                            s_c = max(0.0, min(1.0, s))
+                            d_c = math.hypot(tx - (ax + s_c * vx), ty - (ay + s_c * vy))
+                            d_c_comp = d_c - 1e-5 if abs(vy) < abs(vx) else d_c
+                            if d_c_comp < fb_d_comp:
+                                fb_d_comp = d_c_comp
+                                fb_d = d_c
+                                fb_edge = (ax, ay, bx, by)
+                                fb_nx, fb_ny = nx, ny
+
+                    if hit_edge is None and fb_edge is not None:
+                        # Kolmice nepadla na žádnou stěnu celého obrysu -> nejbližší bod plotu.
+                        hit_edge = fb_edge
+                        best_nx, best_ny = fb_nx, fb_ny
+
+                    if hit_edge is not None:
+                        ax, ay, bx, by = hit_edge
+                        vx, vy = bx - ax, by - ay
+                        L2 = vx * vx + vy * vy
+
+                        # Projekce bez ořezání pro dokonalou kolmici
+                        s = ((tx - ax) * vx + (ty - ay) * vy) / L2
+                        px, py = ax + s * vx, ay + s * vy
+                        
+                        # Odstup portálu od plotu (vždy přesně 16.0m podle kolmice)
+                        offset = 16.0
+                        actual_offset = 16.0
+                        gx = px + offset * best_nx
+                        gy = py + offset * best_ny
+                        s_actual = s
+                        
+                        # Ověření, že portál neskončí mimo (např. kvůli velkému s)
+                        if not _point_in_polys(gx, gy, substation_polygons):
+                            # Fallback na clamped s a dynamic offset
+                            s_c = max(0.0, min(1.0, s))
+                            px_c, py_c = ax + s_c * vx, ay + s_c * vy
+                            gx_c = px_c + offset * best_nx
+                            gy_c = py_c + offset * best_ny
+                            if _point_in_polys(gx_c, gy_c, substation_polygons):
+                                gx, gy = gx_c, gy_c
+                                s_actual = s_c
+                            else:
+                                # Absolutní fallback na 16.0m offset
+                                gx, gy = px_c + 16.0 * best_nx, py_c + 16.0 * best_ny
+                                s_actual = s_c
+                                actual_offset = 16.0
+                            
+                        yaw = math.atan2(-best_ny, -best_nx) - math.pi / 2.0
+                        
+                        d_pylon_wall = math.hypot(tx - px, ty - py)
+                        total_dist = d_pylon_wall + actual_offset
+                        # Uložíme jako list, abychom mohli souřadnice a s_actual později modifikovat (včetně unclamped s, offsetu a celkové vzdálenosti)
+                        gantries_to_add.append([gx, gy, yaw, k, line_idx, hit_edge, (best_nx, best_ny), s_actual, s, actual_offset, total_dist])
+                        
+        # Odtlačovací smyčka podél stěny plotu k zamezení překrytí (kolizí) pouze při skutečném průniku (SAT)
+        if gantries_to_add:
+            # Vypočteme poloměry pro existující sloupy
+            tower_radii = {}
+            for tk, t in towers.items():
+                tmpl = t[3]
+                if tmpl and tmpl.verts:
+                    rx = [v[0] for v in tmpl.verts]
+                    ry = [v[1] for v in tmpl.verts]
+                    tower_radii[tk] = max(max(rx) - min(rx), max(ry) - min(ry)) / 2.0
+                else:
+                    tower_radii[tk] = 0.0
+
+            # Vytvoříme si mapu hran a jejich startovních vzdáleností podél obvodu polygonu
+            edge_start_dist = {}
+            edge_is_forward = {}
+            if substation_polygons:
+                poly = substation_polygons[0]
+                # Ověříme orientaci (signed area)
+                area = 0.0
+                n_verts = len(poly)
+                for idx in range(n_verts):
+                    v1 = poly[idx]
+                    v2 = poly[(idx + 1) % n_verts]
+                    area += (v1[0] * v2[1] - v2[0] * v1[1])
+                if area < 0.0:  # Je CW, obrátíme ho na CCW
+                    poly = list(reversed(poly))
+                
+                cum_dist = 0.0
+                for idx in range(n_verts):
+                    v1 = poly[idx]
+                    v2 = poly[(idx + 1) % n_verts]
+                    k_fw = (v1[0], v1[1], v2[0], v2[1])
+                    k_rv = (v2[0], v2[1], v1[0], v1[1])
+                    edge_start_dist[k_fw] = cum_dist
+                    edge_start_dist[k_rv] = cum_dist
+                    edge_is_forward[k_fw] = True
+                    edge_is_forward[k_rv] = False
+                    cum_dist += math.hypot(v2[0] - v1[0], v2[1] - v1[1])
+
+            def _get_ccw_dist(g_entry, s_val, L_val):
+                edge = g_entry[5]
+                base_dist = edge_start_dist.get(edge, 0.0)
+                if edge_is_forward.get(edge, True):
+                    return base_dist + s_val * L_val
+                else:
+                    return base_dist + (1.0 - s_val) * L_val
+
+            # Krok posunu v jedné iteraci
+            step = 0.2
+            
+            for _ in range(100):
+                moved = False
+                
+                # 1. Odtlačení portálů od sebe navzájem (sklouznutí podél plotu při průniku)
+                for i in range(len(gantries_to_add)):
+                    for j in range(i + 1, len(gantries_to_add)):
+                        g1 = gantries_to_add[i]
+                        g2 = gantries_to_add[j]
+                        
+                        # Získáme OBB rohy obou portálů
+                        rect1 = _gantry_corners(g1[0], g1[1], g1[2])
+                        rect2 = _gantry_corners(g2[0], g2[1], g2[2])
+                        
+                        if _rects_intersect(rect1, rect2):
+                            dx = g2[0] - g1[0]
+                            dy = g2[1] - g1[1]
+                            d = math.hypot(dx, dy)
+                            
+                            # Pro g1: projekce posunu na směr jeho stěny plotu
+                            ax1, ay1, bx1, by1 = g1[5]
+                            L1 = math.hypot(bx1 - ax1, by1 - ay1) or 1.0
+                            ux1, uy1 = (bx1 - ax1) / L1, (by1 - ay1) / L1
+                            
+                            # Pro g2: projekce posunu na směr jeho stěny plotu
+                            ax2, ay2, bx2, by2 = g2[5]
+                            L2 = math.hypot(bx2 - ax2, by2 - ay2) or 1.0
+                            ux2, uy2 = (bx2 - ax2) / L2, (by2 - ay2) / L2
+                            
+                            # Vypočteme pozice podél obvodu plotu
+                            d_p1 = _get_ccw_dist(g1, g1[8], L1)
+                            d_p2 = _get_ccw_dist(g2, g2[8], L2)
+                            
+                            gap_meters = 12.2
+                            dist1 = edge_start_dist.get(g1[5], 0.0)
+                            dist2 = edge_start_dist.get(g2[5], 0.0)
+                            fw1 = edge_is_forward.get(g1[5], True)
+                            fw2 = edge_is_forward.get(g2[5], True)
+                            
+                            # Limity pro s1 a s2, aby se neprohodilo pořadí podél obvodu plotu (i přes rohy)
+                            s1_max_limit = 1.0
+                            s1_min_limit = 0.0
+                            s2_max_limit = 1.0
+                            s2_min_limit = 0.0
+                            
+                            if d_p1 < d_p2:
+                                # g1 (menší d) musí být <= g2 (větší d) - gap
+                                limit_d1 = _get_ccw_dist(g2, g2[7], L2) - gap_meters
+                                if fw1:
+                                    s1_max_limit = max(0.0, min(1.0, (limit_d1 - dist1) / L1))
+                                else:
+                                    s1_min_limit = max(0.0, min(1.0, 1.0 - (limit_d1 - dist1) / L1))
+                                    
+                                # g2 (větší d) musí být >= g1 (menší d) + gap
+                                limit_d2 = _get_ccw_dist(g1, g1[7], L1) + gap_meters
+                                if fw2:
+                                    s2_min_limit = max(0.0, min(1.0, (limit_d2 - dist2) / L2))
+                                else:
+                                    s2_max_limit = max(0.0, min(1.0, 1.0 - (limit_d2 - dist2) / L2))
+                            else:
+                                # g1 (větší d) musí být >= g2 (menší d) + gap
+                                limit_d1 = _get_ccw_dist(g2, g2[7], L2) + gap_meters
+                                if fw1:
+                                    s1_min_limit = max(0.0, min(1.0, (limit_d1 - dist1) / L1))
+                                else:
+                                    s1_max_limit = max(0.0, min(1.0, 1.0 - (limit_d1 - dist1) / L1))
+                                    
+                                # g2 (menší d) musí být <= g1 (větší d) - gap
+                                limit_d2 = _get_ccw_dist(g1, g1[7], L1) - gap_meters
+                                if fw2:
+                                    s2_max_limit = max(0.0, min(1.0, (limit_d2 - dist2) / L2))
+                                else:
+                                    s2_min_limit = max(0.0, min(1.0, 1.0 - (limit_d2 - dist2) / L2))
+                            
+                            if d < 1e-9:
+                                if d_p1 < d_p2:
+                                    slide1 = -step * L1 if fw1 else step * L1
+                                    slide2 = step * L2 if fw2 else -step * L2
+                                else:
+                                    slide1 = step * L1 if fw1 else -step * L1
+                                    slide2 = -step * L2 if fw2 else step * L2
+                            else:
+                                ux_c, uy_c = dx / d, dy / d
+                                slide1 = -step * (ux_c * ux1 + uy_c * uy1)
+                                slide2 = step * (ux_c * ux2 + uy_c * uy2)
+                                
+                            applied1 = 0.0
+                            applied2 = 0.0
+                            
+                            # Aplikace posunu na g1
+                            if abs(slide1) > 1e-5:
+                                s1_new = max(s1_min_limit, min(s1_max_limit, g1[7] + slide1 / L1))
+                                ds1 = (s1_new - g1[7]) * L1
+                                if abs(ds1) > 1e-5:
+                                    shift_x = ds1 * ux1
+                                    shift_y = ds1 * uy1
+                                    if _gantry_points_inside(g1[0] + shift_x, g1[1] + shift_y, g1[2], substation_polygons):
+                                        g1[0] += shift_x
+                                        g1[1] += shift_y
+                                        g1[7] = s1_new
+                                        towers[g1[3]][0] += shift_x
+                                        towers[g1[3]][1] += shift_y
+                                        applied1 = ds1
+                                        moved = True
+                                        
+                            # Aplikace posunu na g2
+                            if abs(slide2) > 1e-5:
+                                s2_new = max(s2_min_limit, min(s2_max_limit, g2[7] + slide2 / L2))
+                                ds2 = (s2_new - g2[7]) * L2
+                                if abs(ds2) > 1e-5:
+                                    shift_x = ds2 * ux2
+                                    shift_y = ds2 * uy2
+                                    if _gantry_points_inside(g2[0] + shift_x, g2[1] + shift_y, g2[2], substation_polygons):
+                                        g2[0] += shift_x
+                                        g2[1] += shift_y
+                                        g2[7] = s2_new
+                                        towers[g2[3]][0] += shift_x
+                                        towers[g2[3]][1] += shift_y
+                                        applied2 = ds2
+                                        moved = True
+                                        
+                            # Pokud byl g1 zablokován, ale slide1 byl potřeba, pokusíme se posunout g2 o plnou hodnotu (dvojnásobný krok)
+                            if abs(applied1) < 1e-5 and abs(slide1) > 1e-5:
+                                if d < 1e-9:
+                                    if d_p1 < d_p2:
+                                        extra_slide2 = (step * 2.0 * L2) if fw2 else (-step * 2.0 * L2)
+                                    else:
+                                        extra_slide2 = (-step * 2.0 * L2) if fw2 else (step * 2.0 * L2)
+                                else:
+                                    extra_slide2 = step * 2.0 * (ux_c * ux2 + uy_c * uy2)
+                                s2_new = max(s2_min_limit, min(s2_max_limit, g2[7] + extra_slide2 / L2))
+                                ds2 = (s2_new - g2[7]) * L2
+                                if abs(ds2) > abs(applied2) + 1e-5:
+                                    inc_ds2 = ds2 - applied2
+                                    shift_x = inc_ds2 * ux2
+                                    shift_y = inc_ds2 * uy2
+                                    if _gantry_points_inside(g2[0] + shift_x, g2[1] + shift_y, g2[2], substation_polygons):
+                                        g2[0] += shift_x
+                                        g2[1] += shift_y
+                                        g2[7] = s2_new
+                                        towers[g2[3]][0] += shift_x
+                                        towers[g2[3]][1] += shift_y
+                                        moved = True
+                                        
+                            # Pokud byl g2 zablokován, ale slide2 byl potřeba, pokusíme se posunout g1 o plnou hodnotu (dvojnásobný krok)
+                            if abs(applied2) < 1e-5 and abs(slide2) > 1e-5:
+                                if d < 1e-9:
+                                    if d_p1 < d_p2:
+                                        extra_slide1 = (-step * 2.0 * L1) if fw1 else (step * 2.0 * L1)
+                                    else:
+                                        extra_slide1 = (step * 2.0 * L1) if fw1 else (-step * 2.0 * L1)
+                                else:
+                                    extra_slide1 = -step * 2.0 * (ux_c * ux1 + uy_c * uy1)
+                                s1_new = max(s1_min_limit, min(s1_max_limit, g1[7] + extra_slide1 / L1))
+                                ds1 = (s1_new - g1[7]) * L1
+                                if abs(ds1) > abs(applied1) + 1e-5:
+                                    inc_ds1 = ds1 - applied1
+                                    shift_x = inc_ds1 * ux1
+                                    shift_y = inc_ds1 * uy1
+                                    if _gantry_points_inside(g1[0] + shift_x, g1[1] + shift_y, g1[2], substation_polygons):
+                                        g1[0] += shift_x
+                                        g1[1] += shift_y
+                                        g1[7] = s1_new
+                                        towers[g1[3]][0] += shift_x
+                                        towers[g1[3]][1] += shift_y
+                                        moved = True
+
+                # 2. Odtlačení portálů od ostatních sloupů při průniku (kružnice vs OBB)
+                for i, g in enumerate(gantries_to_add):
+                    k_term = g[3]
+                    for tk, t in towers.items():
+                        if tk == k_term:
+                            continue  # Vlastní přívodní sloup vyřešen dynamic offsetem
+                            
+                        r = tower_radii.get(tk, 0.0)
+                        if _gantry_collides_with_tower(g[0], g[1], g[2], t[0], t[1], r + 1.0): # Přidáme rezervu 1.0m pro ramena sloupu
+                            dx = g[0] - t[0]
+                            dy = g[1] - t[1]
+                            d = math.hypot(dx, dy)
+                            if d < 1e-9:
+                                ux_c, uy_c = 1.0, 0.0
+                            else:
+                                ux_c, uy_c = dx / d, dy / d
+                            
+                            # Projekce posunu na směr stěny plotu portálu g
+                            ax, ay, bx, by = g[5]
+                            L = math.hypot(bx - ax, by - ay) or 1.0
+                            ux, uy = (bx - ax) / L, (by - ay) / L
+                            slide = step * 2.0 * (ux_c * ux + uy_c * uy)  # Větší krok, tlačíme jen jeden portál
+                            
+                            if abs(slide) > 1e-5:
+                                s_new = max(0.0, min(1.0, g[7] + slide / L))
+                                ds = (s_new - g[7]) * L
+                                if abs(ds) > 1e-5:
+                                    shift_x = ds * ux
+                                    shift_y = ds * uy
+                                    if _gantry_points_inside(g[0] + shift_x, g[1] + shift_y, g[2], substation_polygons):
+                                        g[0] += shift_x
+                                        g[1] += shift_y
+                                        g[7] = s_new
+                                        towers[g[3]][0] += shift_x
+                                        towers[g[3]][1] += shift_y
+                                        moved = True
+                                        
+                if not moved:
+                    break
+                    
+        if templates is None: templates = load_pylon_templates()
+        for g_entry in gantries_to_add:
+            gx, gy, yaw, k_term, line_idx = g_entry[0], g_entry[1], g_entry[2], g_entry[3], g_entry[4]
+            g_key = (gx, gy)
+            tmpl = templates.get("Pylon_Substation")
+            tmpl1 = templates.get("Pylon_Substation_Low") or tmpl
+            if tmpl:
+                towers[g_key] = [gx, gy, yaw, tmpl, tmpl1]
+                _terminal_pylons.add(g_key)
+                _gantry_keys.add(g_key)
+                line_spans[line_idx][2].append((k_term, g_key))
+
+    # --- Phase 3: stamp the large/medium towers, then the cables (and warning balls). ---
+    for k, t in towers.items():
+        x, y, yaw, tmpl, tmpl1 = t
+        foot_z = _foot_z(terrain, x, y)
+        _place_pylon(mesh, tmpl, x, y, foot_z, yaw)
+        _place_pylon(mesh1, tmpl1, x, y, foot_z, yaw)
+        stats.towers += 1
+
+    _sub_attach = CONDUCTOR_ATTACH.get("Pylon_Substation", [])
+    for (attach_local, sag, spans, line) in line_spans:
+        if not spans:
+            continue
+        spans_xyz = []
+        for (ka, kb) in spans:
+            ta, tb = towers[ka], towers[kb]
+            za = _foot_z(terrain, ta[0], ta[1])
+            zb = _foot_z(terrain, tb[0], tb[1])
+            sx = (ta[0], ta[1], za, ta[2], tb[0], tb[1], zb, tb[2])
+            spans_xyz.append(sx)
+            if draw_cables and attach_local:
+                a_g = ka in _gantry_keys
+                b_g = kb in _gantry_keys
+                if a_g or b_g:
+                    # One end is a substation portal: attach its conductors to the
+                    # portal's own crossarm points, not to the line pylon's arms.
+                    _span_cables_mixed(mesh,
+                                       _sub_attach if a_g else attach_local,
+                                       _sub_attach if b_g else attach_local,
+                                       sag, sx)
+                else:
+                    _span_cables(mesh, attach_local, sag, [sx])
         if draw_balls and ball_tmpl is not None:
             top = _top_attach(attach_local)
             if top is not None:
                 is_hv = _line_is_hv(line)
-                tsag = SAG_BY_TYPE.get(line.pylon_type, DEFAULT_SAG)
                 tax, tay, taz = top
-                for j in range(n - 1):
-                    if j not in node_world or (j + 1) not in node_world:
-                        continue
-                    xa, ya, za, yawa = node_world[j]
-                    xb, yb, zb, yawb = node_world[j + 1]
+                for (xa, ya, za, yawa, xb, yb, zb, yawb) in spans_xyz:
                     ca, sa = math.cos(yawa), math.sin(yawa)
                     cb, sb = math.cos(yawb), math.sin(yawb)
                     rax, ray = _rotz(tax, tay, ca, sa)
                     rbx, rby = _rotz(tax, tay, cb, sb)
                     bpa = (rax + xa, ray + ya, taz + za)
                     bpb = (rbx + xb, rby + yb, taz + zb)
-                    mode = _ball_mode_for_span(bpa, bpb, tsag, terrain,
-                                               airport_zones, is_hv)
+                    mode = _ball_mode_for_span(bpa, bpb, sag, terrain, airport_zones, is_hv)
                     if mode is None:
                         continue
                     diameter, spacing = mode
                     stats.balls += _place_balls_on_cable(
-                        mesh, ball_tmpl, diameter / ball_native_d,
-                        bpa, bpb, tsag, spacing,
-                    )
-
-        if had_geometry:
-            stats.lines_with_geometry += 1
+                        mesh, ball_tmpl, diameter / ball_native_d, bpa, bpb, sag, spacing)
 
     logger.info(
         "Powerline mesh: %d towers, %d cable spans, %d warning balls across %d "

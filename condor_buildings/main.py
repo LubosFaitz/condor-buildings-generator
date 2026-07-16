@@ -310,15 +310,49 @@ def _generate_powerline_group(osm_path, projector, terrain, draw_balls=False):
     if not zones:
         zones = parse_result.airport_zones
 
+    # Substation outlines (OSM power=substation). A large/medium tower must not stand
+    # inside a switchyard -- only small pylons may -- so the generator skips those nodes.
+    sub_polys = _read_substation_polygons(osm_path, projector)
+
     # Single pass: LOD0 (towers + cables + balls) and LOD1 (large+medium pylons
     # only) are built together - the terrain foot_z per node is computed once.
     mesh_lod0, mesh_lod1, pl_stats = generate_powerline_meshes(
         parse_result.lines, terrain,
         draw_balls=draw_balls, airport_zones=zones,
+        substation_polygons=sub_polys,
     )
     if mesh_lod0.is_empty():
         return None, None, None
     return mesh_lod0, mesh_lod1, pl_stats
+
+
+def _read_substation_polygons(osm_path, projector, min_size_m=100.0):
+    """Substation fences from OSM (power=substation), as (x, y) rings in patch coords.
+
+    Only real switchyards (>= min_size_m across); the little distribution kiosks are
+    skipped. Pure ElementTree, so it works with or without Blender. Never raises.
+    """
+    import xml.etree.ElementTree as _ET
+    try:
+        root = _ET.parse(osm_path).getroot()
+    except Exception:
+        return []
+    coords = {n.get("id"): (float(n.get("lat")), float(n.get("lon")))
+              for n in root.findall("node")}
+    rings = []
+    for way in root.findall("way"):
+        tags = {t.get("k"): t.get("v") for t in way.findall("tag")}
+        if tags.get("power") != "substation":
+            continue
+        ring = [projector.project(*coords[nd.get("ref")])
+                for nd in way.findall("nd") if nd.get("ref") in coords]
+        if len(ring) < 3:
+            continue
+        xs = [p[0] for p in ring]
+        ys = [p[1] for p in ring]
+        if max(max(xs) - min(xs), max(ys) - min(ys)) >= min_size_m:
+            rings.append(ring)
+    return rings
 
 
 def _generate_aerialway_group(osm_path, projector, terrain,

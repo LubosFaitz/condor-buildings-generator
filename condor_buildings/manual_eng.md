@@ -250,6 +250,14 @@ When enabled, three kinds of infrastructure are generated from OSM data — **wh
 
 Note: the former separate "Aerialways" checkbox was **removed** — aerialways now fall under this single checkbox. Right below the Powerlines box is a collapsible **Other objects** section (chimneys, see below).
 
+### Substations (power=substation)
+Where a power line enters a substation, a **gantry** (`pylon_substation`) is built automatically and the cables are connected to it, so the line no longer ends in mid-air at the fence. Everything is part of the `pylones` object; there is nothing extra to enable.
+
+- **Which pylon gets a gantry** — the last pylon **outside** the substation outline whose **neighbouring node on the same OSM way lies inside** it (that node is where the line enters). The number of cables and the distance to the fence do not matter; small pylons are skipped. One pylon never gets two gantries.
+- **Where the gantry goes** — a **perpendicular** is dropped from the pylon's centre and must **actually hit an outline wall** (the foot falls within the wall, not past its end). Of those walls the nearest is taken — even if it is tens of metres further away than a corner. The gantry sits on that perpendicular **16 m inside the wall** and is **aligned with that wall**, so it faces the pylon and the cable runs straight. If the perpendicular hits no wall, the nearest fence point is used as a fallback.
+- **No overlaps** — gantries in corners and their collisions with incoming pylons are only resolved **when the objects genuinely intersect** (an exact rotated-rectangle test, 12.2 × 5.5 m). The pair then slides along the fence in small steps, a gantry never slides outside the fence (its centre and all 4 corners are checked), and if one is blocked the remaining shift is passed to the other gantry. The order of gantries around the whole perimeter is preserved, so **cables never cross**. If a pylon stands very close to the fence, the perpendicular offset is increased so that pylon and gantry are at least 25 m apart.
+- **Cable attachment** — the last span uses the **gantry's attachment points** (three points 4.61 m apart, 14.07 m above the terrain), not those of the incoming line. Conductors are paired by side (left–left … right–right) so they don't cross, and the **earth wire from the pylon top is not connected to the gantry** — it ends there. Ordinary pylon-to-pylon spans are unchanged.
+
 ### Aerialways
 From OSM `aerialway=*` ways (both cable-car and chair lifts) the plugin generates pylons, a straight cable, and hanging cabins/seats:
 - **Pylons** — cabin (`Pylon_AerialCab`) or chair (`Pylon_Aerialway`), oriented along the route, foot exactly on the terrain. Pylons reaching beyond the patch edge take their foot height from the **neighbouring patch's terrain** so they line up with it.

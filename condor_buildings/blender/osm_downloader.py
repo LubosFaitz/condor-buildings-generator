@@ -83,6 +83,10 @@ def build_overpass_query(
     if include_power:
         parts.append(f'  way["power"="line"]({bbox});')
         parts.append(f'  way["power"="minor_line"]({bbox});')
+        # Substation outline: OSM marks a switchyard with a closed way tagged
+        # power=substation (w23232738 "Iver Substation", w28457258 "Rozvodna Reporyje").
+        # Without this the polygon is simply not in the downloaded file.
+        parts.append(f'  way["power"="substation"]({bbox});')
         parts.append(f'  node["power"="generator"]["generator:source"="wind"]({bbox});')
 
     # Aerialways (cable cars / chair lifts). Tiny and ignored by the building
