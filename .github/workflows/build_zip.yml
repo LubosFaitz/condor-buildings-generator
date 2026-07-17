@@ -18,12 +18,21 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Get addon version
         id: version
         run: |
-          VERSION=$(grep -o '"version": *([0-9, ]*)' condor_buildings/__init__.py | sed 's/[^0-9,]//g' | tr ',' '.')
+          VERSION=$(python - <<'PY'
+          import re
+          text = open("condor_buildings/__init__.py", encoding="utf-8").read()
+          match = re.search(r'"version"\s*:\s*\((.*?)\)', text, re.S)
+          if match:
+              print(match.group(1).replace(",", ".").replace(" ", ""))
+          else:
+              raise Exception("Version not found")
+          PY
+          )
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Prepare Blender ZIP package
