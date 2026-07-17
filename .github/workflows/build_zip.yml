@@ -1,6 +1,6 @@
 name: Create Blender ZIP
 
-on:
+"on":
   push:
     paths:
       - "condor_buildings/**"
