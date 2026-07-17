@@ -1,24 +1,38 @@
 name: Create Blender ZIP
 
 on:
-  workflow_dispatch:
+  push:
+    paths:
+      - "condor_buildings/**"
+      - "README.md"
+      - "LICENSE"
+
+permissions:
+  contents: write
 
 jobs:
   zip:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Stáhnout repozitář
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Připravit ZIP pro Blender
+      - name: Get addon version
+        id: version
+        run: |
+          VERSION=$(grep -o '"version": ([0-9, ]*)' condor_buildings/__init__.py | grep -o '[0-9, ]*' | tr -d ' ' | tr ',' '.')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Prepare Blender ZIP package
         run: |
           cp README.md condor_buildings/
-          cp LICENCE condor_buildings/
+          cp LICENSE condor_buildings/
           zip -r condor_buildings.zip condor_buildings
 
-      - name: Uložit ZIP
-        uses: actions/upload-artifact@v4
+      - name: Create Release and upload ZIP
+        uses: softprops/action-gh-release@v2
         with:
-          name: condor_buildings.zip
-          path: condor_buildings.zip
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Condor Buildings v${{ steps.version.outputs.version }}
+          files: condor_buildings.zip
