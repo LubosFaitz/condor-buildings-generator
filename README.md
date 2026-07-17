@@ -32,7 +32,7 @@ python -m condor_buildings.main \
 
 ### Option 2: Blender Addon (v0.5.0+)
 
-1. Download `condor_buildings_v0.9.0.zip` from releases
+1. Download `condor_buildings.zip` from the latest release
 2. In Blender: Edit > Preferences > Add-ons > Install
 3. Select the ZIP file
 4. Enable "Condor Buildings Generator" addon
