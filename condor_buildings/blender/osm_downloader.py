@@ -654,8 +654,8 @@ def download_airports_for_patch(patch_metadata, autogen_dir):
             meta["searched_patches"] = sorted(searched)
             existing["__meta__"] = meta
         if changed:
-            # __meta__ (prohledané patche) nahoru; patche seskupené po X (první tři
-            # číslice) - každá skupina X na svém řádku vedle sebe; letiště pod tím
+            # __meta__ (searched patches) on top; patches grouped by X (first three
+            # digits) - each X group on its own line side by side; airports below that
             ordered = {}
             if "__meta__" in existing:
                 ordered["__meta__"] = existing["__meta__"]

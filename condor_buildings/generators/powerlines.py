@@ -1282,7 +1282,7 @@ def generate_powerline_meshes(
                     if not is_in_line:
                         continue
                     if any(g[3] == k for g in gantries_to_add):
-                        continue                      # portál už tenhle sloup dostal
+                        continue                      # this pylon already got a gantry
                     tx, ty = towers[k][0], towers[k][1]
                     if not _near_substation(tx, ty):
                         continue
@@ -1293,13 +1293,13 @@ def generate_powerline_meshes(
                     _d1 = math.hypot(ddx, ddy) or 1.0
                     ddx, ddy = ddx / _d1, ddy / _d1
 
-                    # 1. Najdeme nejlepší stěnu na základě směru drátů a kolmice
+                    # 1. Find the best wall based on the wire direction and the perpendicular
                     best_d = 1e18
                     best_d_comp = 1e18
                     hit_edge = None
                     cxp, cyp = tx, ty
                     best_nx, best_ny = 0.0, -1.0
-                    # Záloha pro případ, že kolmice nepadne na žádnou stěnu celého obrysu.
+                    # Fallback in case the perpendicular hits no wall of the whole outline.
                     fb_d = 1e18
                     fb_d_comp = 1e18
                     fb_edge = None
@@ -1310,7 +1310,7 @@ def generate_powerline_meshes(
                         L2 = vx * vx + vy * vy
                         if L2 < 1e-9: continue
                         
-                        # Vnitřní normála
+                        # Inner normal
                         _en = math.hypot(vx, vy) or 1.0
                         n1x, n1y = -vy / _en, vx / _en
                         mx, my = (ax + bx) / 2.0, (ay + by) / 2.0
@@ -1319,14 +1319,16 @@ def generate_powerline_meshes(
                         else:
                             nx, ny = -n1x, -n1y
                             
-                        # Sloup musí stát VNĚ téhle zdi (jinak bychom sáhli na protější stěnu).
-                        # Podle směru drátu se zeď NEvyhazuje -- rozhoduje jen kolmice.
+                        # The pylon must stand OUTSIDE this wall (otherwise we would reach
+                        # the opposite wall). The wall is NOT discarded by the wire
+                        # direction -- only the perpendicular decides.
                         if (tx - ax) * nx + (ty - ay) * ny >= 0.0:
                             continue
 
-                        # Kolmici ze středu sloupu protáhneme jak daleko je potřeba a hledáme
-                        # ji po CELÉM obrysu. Přednost má vždy stěna, na kterou kolmice
-                        # opravdu padne (s v <0,1>), i kdyby byla dál než nejbližší roh.
+                        # The perpendicular from the pylon centre is extended as far as
+                        # needed and searched along the WHOLE outline. A wall the
+                        # perpendicular really lands on (s in <0,1>) always wins, even if
+                        # it is further away than the nearest corner.
                         s = ((tx - ax) * vx + (ty - ay) * vy) / L2
                         px, py = ax + s * vx, ay + s * vy
                         d = math.hypot(tx - px, ty - py)
@@ -1338,7 +1340,7 @@ def generate_powerline_meshes(
                                 hit_edge = (ax, ay, bx, by)
                                 best_nx, best_ny = nx, ny
                         else:
-                            # kolmice míjí tuhle stěnu -> jen záloha (nejbližší bod plotu)
+                            # perpendicular misses this wall -> fallback only (nearest fence point)
                             s_c = max(0.0, min(1.0, s))
                             d_c = math.hypot(tx - (ax + s_c * vx), ty - (ay + s_c * vy))
                             d_c_comp = d_c - 1e-5 if abs(vy) < abs(vx) else d_c
@@ -1349,7 +1351,7 @@ def generate_powerline_meshes(
                                 fb_nx, fb_ny = nx, ny
 
                     if hit_edge is None and fb_edge is not None:
-                        # Kolmice nepadla na žádnou stěnu celého obrysu -> nejbližší bod plotu.
+                        # The perpendicular hit no wall of the whole outline -> nearest fence point.
                         hit_edge = fb_edge
                         best_nx, best_ny = fb_nx, fb_ny
 
@@ -1358,18 +1360,18 @@ def generate_powerline_meshes(
                         vx, vy = bx - ax, by - ay
                         L2 = vx * vx + vy * vy
 
-                        # Projekce bez ořezání pro dokonalou kolmici
+                        # Projection without clamping for a perfect perpendicular
                         s = ((tx - ax) * vx + (ty - ay) * vy) / L2
                         px, py = ax + s * vx, ay + s * vy
                         
-                        # Odstup portálu od plotu (vždy přesně 16.0m podle kolmice)
+                        # Gantry clearance from the fence (always exactly 16.0m along the perpendicular)
                         offset = 16.0
                         actual_offset = 16.0
                         gx = px + offset * best_nx
                         gy = py + offset * best_ny
                         s_actual = s
                         
-                        # Ověření, že portál neskončí mimo (např. kvůli velkému s)
+                        # Check that the gantry does not end up outside (e.g. due to a large s)
                         if not _point_in_polys(gx, gy, substation_polygons):
                             # Fallback na clamped s a dynamic offset
                             s_c = max(0.0, min(1.0, s))
@@ -1380,7 +1382,7 @@ def generate_powerline_meshes(
                                 gx, gy = gx_c, gy_c
                                 s_actual = s_c
                             else:
-                                # Absolutní fallback na 16.0m offset
+                                # Absolute fallback to a 16.0m offset
                                 gx, gy = px_c + 16.0 * best_nx, py_c + 16.0 * best_ny
                                 s_actual = s_c
                                 actual_offset = 16.0
@@ -1389,12 +1391,12 @@ def generate_powerline_meshes(
                         
                         d_pylon_wall = math.hypot(tx - px, ty - py)
                         total_dist = d_pylon_wall + actual_offset
-                        # Uložíme jako list, abychom mohli souřadnice a s_actual později modifikovat (včetně unclamped s, offsetu a celkové vzdálenosti)
+                        # Stored as a list so the coordinates and s_actual can be modified later (including unclamped s, offset and total distance)
                         gantries_to_add.append([gx, gy, yaw, k, line_idx, hit_edge, (best_nx, best_ny), s_actual, s, actual_offset, total_dist])
                         
-        # Odtlačovací smyčka podél stěny plotu k zamezení překrytí (kolizí) pouze při skutečném průniku (SAT)
+        # Push-apart loop along the fence wall to prevent overlap (collisions), only on a real intersection (SAT)
         if gantries_to_add:
-            # Vypočteme poloměry pro existující sloupy
+            # Compute the radii for the existing pylons
             tower_radii = {}
             for tk, t in towers.items():
                 tmpl = t[3]
@@ -1405,19 +1407,19 @@ def generate_powerline_meshes(
                 else:
                     tower_radii[tk] = 0.0
 
-            # Vytvoříme si mapu hran a jejich startovních vzdáleností podél obvodu polygonu
+            # Build a map of the edges and their start distances along the polygon perimeter
             edge_start_dist = {}
             edge_is_forward = {}
             if substation_polygons:
                 poly = substation_polygons[0]
-                # Ověříme orientaci (signed area)
+                # Check the orientation (signed area)
                 area = 0.0
                 n_verts = len(poly)
                 for idx in range(n_verts):
                     v1 = poly[idx]
                     v2 = poly[(idx + 1) % n_verts]
                     area += (v1[0] * v2[1] - v2[0] * v1[1])
-                if area < 0.0:  # Je CW, obrátíme ho na CCW
+                if area < 0.0:  # It is CW, flip it to CCW
                     poly = list(reversed(poly))
                 
                 cum_dist = 0.0
@@ -1440,19 +1442,19 @@ def generate_powerline_meshes(
                 else:
                     return base_dist + (1.0 - s_val) * L_val
 
-            # Krok posunu v jedné iteraci
+            # Movement step in a single iteration
             step = 0.2
             
             for _ in range(100):
                 moved = False
                 
-                # 1. Odtlačení portálů od sebe navzájem (sklouznutí podél plotu při průniku)
+                # 1. Push the gantries apart from each other (slide along the fence on intersection)
                 for i in range(len(gantries_to_add)):
                     for j in range(i + 1, len(gantries_to_add)):
                         g1 = gantries_to_add[i]
                         g2 = gantries_to_add[j]
                         
-                        # Získáme OBB rohy obou portálů
+                        # Get the OBB corners of both gantries
                         rect1 = _gantry_corners(g1[0], g1[1], g1[2])
                         rect2 = _gantry_corners(g2[0], g2[1], g2[2])
                         
@@ -1461,17 +1463,17 @@ def generate_powerline_meshes(
                             dy = g2[1] - g1[1]
                             d = math.hypot(dx, dy)
                             
-                            # Pro g1: projekce posunu na směr jeho stěny plotu
+                            # For g1: projection of the movement onto the direction of its fence wall
                             ax1, ay1, bx1, by1 = g1[5]
                             L1 = math.hypot(bx1 - ax1, by1 - ay1) or 1.0
                             ux1, uy1 = (bx1 - ax1) / L1, (by1 - ay1) / L1
                             
-                            # Pro g2: projekce posunu na směr jeho stěny plotu
+                            # For g2: projection of the movement onto the direction of its fence wall
                             ax2, ay2, bx2, by2 = g2[5]
                             L2 = math.hypot(bx2 - ax2, by2 - ay2) or 1.0
                             ux2, uy2 = (bx2 - ax2) / L2, (by2 - ay2) / L2
                             
-                            # Vypočteme pozice podél obvodu plotu
+                            # Compute the positions along the fence perimeter
                             d_p1 = _get_ccw_dist(g1, g1[8], L1)
                             d_p2 = _get_ccw_dist(g2, g2[8], L2)
                             
@@ -1481,35 +1483,35 @@ def generate_powerline_meshes(
                             fw1 = edge_is_forward.get(g1[5], True)
                             fw2 = edge_is_forward.get(g2[5], True)
                             
-                            # Limity pro s1 a s2, aby se neprohodilo pořadí podél obvodu plotu (i přes rohy)
+                            # Limits for s1 and s2 so the order along the fence perimeter is not swapped (even across corners)
                             s1_max_limit = 1.0
                             s1_min_limit = 0.0
                             s2_max_limit = 1.0
                             s2_min_limit = 0.0
                             
                             if d_p1 < d_p2:
-                                # g1 (menší d) musí být <= g2 (větší d) - gap
+                                # g1 (smaller d) must be <= g2 (larger d) - gap
                                 limit_d1 = _get_ccw_dist(g2, g2[7], L2) - gap_meters
                                 if fw1:
                                     s1_max_limit = max(0.0, min(1.0, (limit_d1 - dist1) / L1))
                                 else:
                                     s1_min_limit = max(0.0, min(1.0, 1.0 - (limit_d1 - dist1) / L1))
                                     
-                                # g2 (větší d) musí být >= g1 (menší d) + gap
+                                # g2 (larger d) must be >= g1 (smaller d) + gap
                                 limit_d2 = _get_ccw_dist(g1, g1[7], L1) + gap_meters
                                 if fw2:
                                     s2_min_limit = max(0.0, min(1.0, (limit_d2 - dist2) / L2))
                                 else:
                                     s2_max_limit = max(0.0, min(1.0, 1.0 - (limit_d2 - dist2) / L2))
                             else:
-                                # g1 (větší d) musí být >= g2 (menší d) + gap
+                                # g1 (larger d) must be >= g2 (smaller d) + gap
                                 limit_d1 = _get_ccw_dist(g2, g2[7], L2) + gap_meters
                                 if fw1:
                                     s1_min_limit = max(0.0, min(1.0, (limit_d1 - dist1) / L1))
                                 else:
                                     s1_max_limit = max(0.0, min(1.0, 1.0 - (limit_d1 - dist1) / L1))
                                     
-                                # g2 (menší d) musí být <= g1 (větší d) - gap
+                                # g2 (smaller d) must be <= g1 (larger d) - gap
                                 limit_d2 = _get_ccw_dist(g1, g1[7], L1) - gap_meters
                                 if fw2:
                                     s2_max_limit = max(0.0, min(1.0, (limit_d2 - dist2) / L2))
@@ -1563,7 +1565,7 @@ def generate_powerline_meshes(
                                         applied2 = ds2
                                         moved = True
                                         
-                            # Pokud byl g1 zablokován, ale slide1 byl potřeba, pokusíme se posunout g2 o plnou hodnotu (dvojnásobný krok)
+                            # If g1 was blocked but slide1 was needed, try to move g2 by the full amount (double step)
                             if abs(applied1) < 1e-5 and abs(slide1) > 1e-5:
                                 if d < 1e-9:
                                     if d_p1 < d_p2:
@@ -1586,7 +1588,7 @@ def generate_powerline_meshes(
                                         towers[g2[3]][1] += shift_y
                                         moved = True
                                         
-                            # Pokud byl g2 zablokován, ale slide2 byl potřeba, pokusíme se posunout g1 o plnou hodnotu (dvojnásobný krok)
+                            # If g2 was blocked but slide2 was needed, try to move g1 by the full amount (double step)
                             if abs(applied2) < 1e-5 and abs(slide2) > 1e-5:
                                 if d < 1e-9:
                                     if d_p1 < d_p2:
@@ -1609,15 +1611,15 @@ def generate_powerline_meshes(
                                         towers[g1[3]][1] += shift_y
                                         moved = True
 
-                # 2. Odtlačení portálů od ostatních sloupů při průniku (kružnice vs OBB)
+                # 2. Push the gantries away from the other pylons on intersection (circle vs OBB)
                 for i, g in enumerate(gantries_to_add):
                     k_term = g[3]
                     for tk, t in towers.items():
                         if tk == k_term:
-                            continue  # Vlastní přívodní sloup vyřešen dynamic offsetem
+                            continue  # Own feed pylon handled by the dynamic offset
                             
                         r = tower_radii.get(tk, 0.0)
-                        if _gantry_collides_with_tower(g[0], g[1], g[2], t[0], t[1], r + 1.0): # Přidáme rezervu 1.0m pro ramena sloupu
+                        if _gantry_collides_with_tower(g[0], g[1], g[2], t[0], t[1], r + 1.0): # Add a 1.0m margin for the pylon arms
                             dx = g[0] - t[0]
                             dy = g[1] - t[1]
                             d = math.hypot(dx, dy)
@@ -1626,11 +1628,11 @@ def generate_powerline_meshes(
                             else:
                                 ux_c, uy_c = dx / d, dy / d
                             
-                            # Projekce posunu na směr stěny plotu portálu g
+                            # Projection of the movement onto the direction of gantry g's fence wall
                             ax, ay, bx, by = g[5]
                             L = math.hypot(bx - ax, by - ay) or 1.0
                             ux, uy = (bx - ax) / L, (by - ay) / L
-                            slide = step * 2.0 * (ux_c * ux + uy_c * uy)  # Větší krok, tlačíme jen jeden portál
+                            slide = step * 2.0 * (ux_c * ux + uy_c * uy)  # Larger step, we push only one gantry
                             
                             if abs(slide) > 1e-5:
                                 s_new = max(0.0, min(1.0, g[7] + slide / L))

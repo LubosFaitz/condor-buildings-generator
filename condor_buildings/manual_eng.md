@@ -671,7 +671,7 @@ The bridge appears in the generation log as the `bridges` object. The whole brid
 
 > ⚠️ **Single patch only** and it is an **optional, semi-automatic feature** — decide for yourself whether you want to use it. Sometimes the plugin builds the panel mask automatically well and the farm generates nicely; **other times the mask has to be fixed by hand**, because **OSM only contains the outline of the whole plant**, not the individual panel rows. So the whole workflow is up to the user (whether you want the solar farms at all, whether you want to edit the mask manually, etc.).
 
-The **Other objects** box has a **Solar** row with **Import**, **Merge**, **Flip selected** and **Mask on terrain** / **Save mask** buttons. It generates **ground** solar farms (no rooftop panels) as tilted panels on posts, with the `solar.dds` texture (material `condor_solar`).
+The **Other objects** box has a **Solar** row with **Import**, **Merge**, **Flip selected**, **Mask on terrain** / **Save mask** and (while the scenery hasn't been scanned yet) **Scan solar farms** buttons. It generates **ground** solar farms (no rooftop panels) as tilted panels on posts, with the `solar.dds` texture (material `condor_solar`).
 
 **How it works:**
 1. The farm outline is taken from OSM (`power=plant`/`plant:source=solar` or `power=generator`/`generator:source=solar`, including **relations/multipolygons**; rooftop panels are excluded).
@@ -680,14 +680,15 @@ The **Other objects** box has a **Solar** row with **Import**, **Merge**, **Flip
 4. **Each connected row in the mask = one panel** built exactly on it (each row uses its own direction, so differently-angled blocks fit too).
 
 **Buttons:**
+- **Scan solar farms** — appears only while the scenery has **no** `Working/Autogen/solar_farms.txt` yet. It is a **finder, not a builder**: it lists which patches of the whole scenery contain a ground solar farm (with the farm names), so you don't have to try patch after patch. You can then build just the patches you actually want, instead of all of them. The scan runs **outside Blender in its own window** and takes a few minutes (it queries OpenStreetMap band by band); Blender stays usable the whole time. When it finishes, the list appears and the button disappears on its own. Delete `solar_farms.txt` and the button comes back for a fresh scan.
 - **Import** (single patch only) — builds the farms. Each plant in the patch is a **separate object** `Solar_<patch>_n` in the patch collection. By **LOD**: LOD0 → `Condor_{landscape}_{patch}` **with posts**; LOD1 → `…_LOD1` **without posts**; Both LODs → both.
-- **Flip selected** — flips the tilt (and posts) of the selected panels to the other side (fix each farm separately).
-- **Merge** — merges `Solar_<patch>_n` into one `solar_farm` object (material `condor_solar`).
+- **Flip selected** — flips the tilt (and posts) of the selected panels to the other side (fix each farm separately). **The flip now survives a re-import**: if you redraw one farm's mask and press Import again, the other farms keep the tilt you set. It is also remembered on disk (`solar_flip.json` in the patch's ESRI cache), so it survives closing Blender.
+- **Merge** — merges `Solar_<patch>_n` into one `solar_farm` object (material `condor_solar`). It also **clears away the mask planes** of the merged patches (see below), so you don't have to delete them by hand.
 
 **Manual mask fix (when the auto mask doesn't match):**
-1. **Mask on terrain** — lays the mask flat on the terrain (red = panels) over the Condor texture.
-2. In **top view**, **move and rotate** the plane so the red rows sit on the real panels.
-3. **Save mask** — writes the mask in that position back into `esri_mask.jpg`.
+1. **Mask on terrain** — floats the mask flat **above** the terrain (red = panels) over the Condor texture. It sits high up (≈55 m) so it stays visible even on a slope.
+2. In **top view**, **move** the plane and **rotate it around the vertical axis** so the red rows sit on the real panels. Tilting and scaling are locked — the imagery is top-down, so they are never needed and would only distort the saved mask. Moving it up or down (to see it better) is free and does not affect the result.
+3. **Save mask** — writes the mask in that position back into `esri_mask.jpg`. Only a mask you actually **moved** is written; an untouched one is left on disk exactly as it was (so a perfect mask can't be spoiled), the plane is simply cleared away.
 4. **Import** — builds exactly from it.
    - You can also repaint `esri_mask.jpg` by hand in an editor (open `esri_sat.jpg`, draw the panels black, save as `esri_mask.jpg`). If the mask already exists, Import uses it and doesn't overwrite it.
 

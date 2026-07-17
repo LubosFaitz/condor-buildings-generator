@@ -17,13 +17,23 @@ What it does:
 
   Import (SINGLE patch only) creates each farm as a SEPARATE object 'Solar_<patch>_<n>'
   in the patch collection, so you can select one and press Flip to turn its tilt over.
-  Merge joins all 'Solar_<patch>_<n>' of a patch into one 'solar_farm' object.
+  A flip SURVIVES a re-import (e.g. after one farm's mask was redrawn): the tilt is read
+  off the objects before they are rebuilt, and is also cached in solar_flip.json so it
+  survives closing Blender. Merge joins all 'Solar_<patch>_<n>' of a patch into one
+  'solar_farm' object.
 
   Tiles + debug JPEGs go to  working/autogen/condor_esri_cache/<patch>/ .
+
+  'Scan solar farms' lists which patches of the scenery have a farm at all (so you don't
+  have to try them one by one). It runs solar_scan.py - the standalone helper next to this
+  file - in its OWN process, and shows up only while working/autogen/solar_farms.txt is
+  missing.
 """
 
 import os
 import re
+import sys
+import json
 import math
 import logging
 import xml.etree.ElementTree as ET
@@ -57,6 +67,8 @@ CELL_VTOP = 0.965          # panel edge -> top of the panel image (494/512); str
 UV_FRAME = (0.25, 0.98)    # light-grey (left half of the top strip) -> panel edges + underside
 UV_POST = (0.72, 0.98)     # dark (right half of the top strip) -> posts
 
+MASK_PLANE_H = 55.0         # 'Mask on terrain' plane floats this high (m) -> stays visible on a slope
+
 MIN_RUN = 9.0               # drop panel boxes shorter than this (m) -> kills isolated speckle/road
 MIN_COMPONENT = 400         # in the mask image, drop black blobs smaller than this many pixels (noise)
 MIN_ELONG = 2.0             # drop small blobs that are not row-shaped (roundish noise), PCA-based
@@ -76,6 +88,37 @@ ESRI_URL = ("https://server.arcgisonline.com/ArcGIS/rest/services/"
 
 def _log(msg):
     print(f"[solar] {msg}")
+
+
+# ---------------------------------------------------------------------------
+# FLIP CACHE - remembers each farm's tilt so it survives a re-import
+# ---------------------------------------------------------------------------
+# Lives next to the ESRI images: condor_esri_cache/<patch>/solar_flip.json,
+# {"1": true, "2": false} = farm index -> flipped. The object in the scene ALWAYS
+# wins over this file; the cache only fills in when the object is gone (Blender
+# was closed). Delete the cache folder and the tilt resets to IMPORT_FLIP.
+FLIP_CACHE_NAME = "solar_flip.json"
+
+
+def _flip_cache_read(cache_dir):
+    """{farm_idx: bool} from the cache, {} when there is none / it is unreadable."""
+    try:
+        with open(os.path.join(cache_dir, FLIP_CACHE_NAME), "r") as f:
+            return {int(k): bool(v) for k, v in json.load(f).items()}
+    except Exception:
+        return {}
+
+
+def _flip_cache_write(cache_dir, idx, flip):
+    """Remember one farm's tilt; the other farms in the file stay untouched."""
+    data = _flip_cache_read(cache_dir)
+    data[int(idx)] = bool(flip)
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        with open(os.path.join(cache_dir, FLIP_CACHE_NAME), "w") as f:
+            json.dump({str(k): v for k, v in sorted(data.items())}, f)
+    except OSError as e:
+        _log(f"flip cache write failed: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -914,7 +957,11 @@ class CONDOR_OT_import_solar(Operator):
 
         # per target LOD: a MERGED 'solar_farm'/baked solar is left alone (that LOD skipped); separate
         # 'Solar_<patch>_n' from an earlier import are removed so a re-import REBUILDS them.
+        # Their tilt is read BEFORE they go, so a re-import (e.g. after a mask was redrawn)
+        # keeps it. LOD0 wins if both LODs are there - the flip is per farm, not per LOD.
         active_lods = []
+        scene_flips = {}
+        idx_re = re.compile(rf"solar_{patch_id}_(\d+)")
         for suffix, posts in lod_variants:
             cn = f"Condor_{props.landscape_name}_{patch_id}{suffix}"
             pcol = bpy.data.collections.get(cn)
@@ -924,6 +971,9 @@ class CONDOR_OT_import_solar(Operator):
                     _log(f"LOD{suffix or '0'}: solar already present (merged/baked) - skipped")
                     continue
                 for o in [o for o in solar_objs if fresh_re.match(o.name.lower())]:
+                    m = idx_re.match(o.name.lower())
+                    if m and "solar_flip" in o:
+                        scene_flips.setdefault(int(m.group(1)), bool(o["solar_flip"]))
                     bpy.data.objects.remove(o, do_unlink=True)
             active_lods.append((suffix, posts))
         if not active_lods:
@@ -993,8 +1043,12 @@ class CONDOR_OT_import_solar(Operator):
 
         built = 0
         multi = len(polys) > 1
+        flip_cache = _flip_cache_read(cache_dir)
         for idx, poly in enumerate(polys, 1):
             tag = f"_{idx}" if multi else ""
+            # tilt: the scene wins (farm is still there), else the cache (Blender was
+            # closed), else the default for a first import
+            flip = scene_flips.get(idx, flip_cache.get(idx, IMPORT_FLIP))
             sat_path = os.path.join(cache_dir, f"esri_sat{tag}.jpg")
             luma = _esri_luma(poly, meta, cache_dir, sat_path)
             if luma is None:
@@ -1029,13 +1083,13 @@ class CONDOR_OT_import_solar(Operator):
                 continue
             flat_rows = [v for r in rows for v in r]           # flat [cx,cy,dx,dy,hl, ...]
             for suffix, posts in active_lods:                  # LOD0 with posts, LOD1 without
-                verts, faces, uvs = _build_rows(rows, z_at, IMPORT_FLIP, posts)
+                verts, faces, uvs = _build_rows(rows, z_at, flip, posts)
                 if not verts:
                     continue
                 obj = _make_object(f"Solar_{patch_id}_{idx}{suffix}", verts, faces, uvs, tex_path)
                 obj["patch_id"] = patch_id
                 obj["solar_patch"] = patch_id
-                obj["solar_flip"] = int(IMPORT_FLIP)
+                obj["solar_flip"] = int(flip)
                 obj["solar_posts"] = int(posts)
                 obj["solar_rows"] = flat_rows
                 cols[suffix].objects.link(obj)
@@ -1111,6 +1165,12 @@ class CONDOR_OT_flip_solar(Operator):
             if old_mesh.users == 0:
                 bpy.data.meshes.remove(old_mesh)
             obj["solar_flip"] = int(new_flip)
+            # remember it, so the tilt survives closing Blender (a re-import with the
+            # object still in the scene reads it straight off the object)
+            m = re.match(rf"solar_{patch_id}_(\d+)", obj.name.lower())
+            if m:
+                _flip_cache_write(os.path.join(paths['autogen'], "condor_esri_cache", patch_id),
+                                  int(m.group(1)), new_flip)
             done += 1
 
         self.report({'INFO'}, f"Flipped {done} solar farm(s)")
@@ -1150,6 +1210,7 @@ class CONDOR_OT_merge_solar(Operator):
             return {'CANCELLED'}
         if context.mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')
+        merged_patches = {o.get("solar_patch") for o in solars if o.get("solar_patch")}
 
         by_col = {}
         for obj in solars:
@@ -1176,6 +1237,12 @@ class CONDOR_OT_merge_solar(Operator):
                 for c in list(merged.users_collection):
                     c.objects.unlink(merged)
                 target_col.objects.link(merged)
+
+        # the mask planes of the merged patches have done their job -> clear them from the
+        # outliner. Planes of OTHER patches (work in progress) are left alone.
+        for pl in [o for o in bpy.data.objects
+                   if "solar_mask_edit" in o and o.get("solar_patch") in merged_patches]:
+            bpy.data.objects.remove(pl, do_unlink=True)
 
         self.report({'INFO'}, f"Merged solar for {len(by_col)} collection(s)")
         return {'FINISHED'}
@@ -1263,8 +1330,8 @@ def _solar_polys_no_fetch(paths, patch_id, projector, cache_dir):
 class CONDOR_OT_solar_mask_edit(Operator):
     bl_idname = "condor.solar_mask_edit"
     bl_label = "Mask on terrain"
-    bl_description = ("Lay each farm's esri_mask.jpg flat on the terrain (RED = panels) so you can "
-                      "MOVE/ROTATE it onto the panels in the Condor texture, then Save mask")
+    bl_description = ("Float each farm's esri_mask.jpg flat above the terrain (RED = panels) so you "
+                      "can MOVE/ROTATE it onto the panels in the Condor texture, then Save mask")
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -1314,7 +1381,7 @@ class CONDOR_OT_solar_mask_edit(Operator):
                        _pix_to_patch(0, H, z, x0, y0, meta)]   # SW
             cx = sum(c[0] for c in corners) / 4.0
             cy = sum(c[1] for c in corners) / 4.0
-            zc = (z_at(cx, cy) if z_at else 0.0) + 2.0
+            zc = (z_at(cx, cy) if z_at else 0.0) + MASK_PLANE_H
             verts = [(c[0], c[1], zc) for c in corners]
             name = f"SolarMask_{patch_id}{tag}"
             old = bpy.data.objects.get(name)
@@ -1328,6 +1395,12 @@ class CONDOR_OT_solar_mask_edit(Operator):
                 uvl.data[li].uv = uc
             mesh.materials.append(_mask_overlay_material(name, mask_path))
             obj = bpy.data.objects.new(name, mesh)
+            # Save mask can only take a FLAT move/turn: tilting or scaling the plane would
+            # skew the saved mask, and the imagery is top-down so neither is ever wanted.
+            # Locked here so it cannot happen by a slip of the gizmo. Moving (incl. up/down
+            # to see it) and turning around Z stay free.
+            obj.lock_rotation[0] = obj.lock_rotation[1] = True
+            obj.lock_scale[0] = obj.lock_scale[1] = True
             obj["solar_mask_edit"] = 1
             obj["solar_patch"] = patch_id
             obj["solar_maskpath"] = mask_path
@@ -1366,12 +1439,28 @@ class CONDOR_OT_solar_mask_save(Operator):
         planes = [o for o in context.selected_objects if "solar_mask_edit" in o] \
             or [o for o in bpy.data.objects if "solar_mask_edit" in o]
         saved = 0
+        untouched = 0
         for pl in planes:
             patch_id = pl.get("solar_patch")
             mask_path = pl.get("solar_maskpath")
             geo = pl.get("solar_geo")
             if not (patch_id and mask_path and geo):
                 continue
+
+            # 2D affine A the user applied (plane local verts ARE patch coords, object was identity):
+            #   world_patch = A(orig_patch).  We need orig source = A^-1(target patch).
+            M = pl.matrix_world
+            moved = (any(abs(M[r][k] - (1.0 if r == k else 0.0)) > 1e-6
+                         for r in (0, 1) for k in (0, 1))
+                     or abs(M[0][3]) > 1e-6 or abs(M[1][3]) > 1e-6)
+            if not moved:
+                # nobody moved this one -> the mask on disk is already right. Do NOT rewrite it:
+                # JPEG is lossy, so re-saving would only blur the edges for nothing. Just clear
+                # the plane away.
+                bpy.data.objects.remove(pl, do_unlink=True)
+                untouched += 1
+                continue
+
             z, x0, y0, W, H = int(geo[0]), int(geo[1]), int(geo[2]), int(geo[3]), int(geo[4])
             txt_path = next((p for p in (
                 os.path.join(paths['heightmaps'], f"h{patch_id}.txt"),
@@ -1385,9 +1474,6 @@ class CONDOR_OT_solar_mask_save(Operator):
             if Bold is None:
                 continue
 
-            # 2D affine A the user applied (plane local verts ARE patch coords, object was identity):
-            #   world_patch = A(orig_patch).  We need orig source = A^-1(target patch).
-            M = pl.matrix_world
             a, b, tx = M[0][0], M[0][1], M[0][3]
             c, d, ty = M[1][0], M[1][1], M[1][3]
             det = a * d - b * c
@@ -1434,11 +1520,133 @@ class CONDOR_OT_solar_mask_save(Operator):
             bpy.data.objects.remove(pl, do_unlink=True)
             saved += 1
 
-        if saved == 0:
+        if saved == 0 and untouched == 0:
             self.report({'WARNING'}, "No mask plane to save.")
             return {'CANCELLED'}
-        self.report({'INFO'}, f"Saved {saved} aligned mask(s) - now press Import to rebuild")
+        extra = f", {untouched} unchanged (not rewritten)" if untouched else ""
+        if saved == 0:
+            self.report({'INFO'}, f"No mask was moved{extra} - nothing to rebuild")
+            return {'FINISHED'}
+        self.report({'INFO'}, f"Saved {saved} aligned mask(s){extra} - now press Import to rebuild")
         return {'FINISHED'}
+
+
+# ---------------------------------------------------------------------------
+# SCAN: which patches of this scenery have a solar farm at all
+# ---------------------------------------------------------------------------
+# solar_scan.py is a STANDALONE command-line helper (stdlib only, no bpy). It is run in
+# its OWN process, because it asks Overpass band by band and waits in between - minutes
+# of work that would otherwise freeze Blender solid.
+SCAN_SCRIPT = "solar_scan.py"
+FARMS_FILE = "solar_farms.txt"
+
+
+def _farms_txt_path(context):
+    """Where solar_farms.txt would be, WITHOUT touching the disk - draw() must not
+    create folders, so resolve_condor_paths() cannot be used here."""
+    props = context.scene.condor_buildings
+    if not props.condor_path or props.landscape_name in ('NONE', ''):
+        return None
+    return os.path.join(bpy.path.abspath(props.condor_path), "Landscapes",
+                        props.landscape_name, "Working", "Autogen", FARMS_FILE)
+
+
+def _python_exe():
+    """Blender's own Python. sys.executable is it in current builds; older ones point at
+    blender.exe, hence the fallback next to sys.prefix."""
+    exe = sys.executable
+    if exe and os.path.basename(exe).lower().startswith("python"):
+        return exe
+    name = "python.exe" if sys.platform == "win32" else "python"
+    cand = os.path.join(sys.prefix, "bin", name)
+    return cand if os.path.exists(cand) else exe
+
+
+class CONDOR_OT_scan_solar_farms(Operator):
+    """Modal, but the work happens in a SEPARATE process: the scan takes minutes and would
+    freeze Blender solid if it ran here. So we start solar_scan.py, and this operator only
+    watches it on a timer - Blender stays fully usable, Esc leaves it running, and once the
+    scan finishes the panel is redrawn so the button disappears on its own."""
+    bl_idname = "condor.scan_solar_farms"
+    bl_label = "Scan solar farms"
+    bl_description = ("List which patches of this scenery have a solar farm, so you don't have to "
+                      "try them all. Runs OUTSIDE Blender in its own window and takes minutes; "
+                      "writes Working/Autogen/solar_farms.txt")
+
+    _timer = None
+    _proc = None
+
+    @classmethod
+    def poll(cls, context):
+        props = context.scene.condor_buildings
+        return bool(props.condor_path) and props.landscape_name not in ('NONE', '')
+
+    @staticmethod
+    def _redraw(context):
+        for win in context.window_manager.windows:
+            for area in win.screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
+
+    def execute(self, context):
+        import subprocess
+        from .operators import resolve_condor_paths
+
+        props = context.scene.condor_buildings
+        paths = resolve_condor_paths(props)
+        if not paths:
+            self.report({'ERROR'}, "Invalid Condor paths.")
+            return {'CANCELLED'}
+        if not os.path.isdir(paths['heightmaps']):
+            self.report({'WARNING'}, f"No Heightmaps folder: {paths['heightmaps']}")
+            return {'CANCELLED'}
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), SCAN_SCRIPT)
+        if not os.path.exists(script):
+            self.report({'ERROR'}, f"{SCAN_SCRIPT} not found next to solar.py")
+            return {'CANCELLED'}
+
+        cmd = [_python_exe(), script,
+               bpy.path.abspath(props.condor_path), props.landscape_name]
+        try:
+            # its own console window -> the progress is visible and Blender stays usable
+            self._proc = subprocess.Popen(
+                cmd, creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
+        except Exception as e:
+            self.report({'ERROR'}, f"Scan could not start: {e}")
+            return {'CANCELLED'}
+        _log(f"scan started: {' '.join(cmd)}")
+
+        # watch it, so the button can go away by itself when it's done
+        self._timer = context.window_manager.event_timer_add(2.0, window=context.window)
+        context.window_manager.modal_handler_add(self)
+        self.report({'INFO'}, "Solar scan running in its own window (takes minutes) - the button "
+                              "disappears by itself when it's done")
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        if event.type != 'TIMER':
+            return {'PASS_THROUGH'}          # never swallow input - Blender must stay usable
+        if self._proc.poll() is None:
+            return {'PASS_THROUGH'}          # still running
+        rc = self._proc.returncode
+        self._cleanup(context)
+        self._redraw(context)                # the list is there now -> the button goes
+        if rc == 0:
+            self.report({'INFO'}, "Solar scan finished - see solar_farms.txt")
+        else:
+            self.report({'WARNING'}, f"Solar scan ended with code {rc} - see its window; "
+                                     "press Scan again to pick up from cache")
+        return {'FINISHED'}
+
+    def _cleanup(self, context):
+        if self._timer is not None:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
+
+    def cancel(self, context):
+        # Blender took the modal away (file loaded, window closed): stop watching, but LEAVE
+        # the scan running - it is its own process and its result is worth keeping.
+        self._cleanup(context)
 
 
 # ---------------------------------------------------------------------------
@@ -1455,6 +1663,10 @@ def draw_panel(layout, context):
     row = box.row(align=True)
     row.operator("condor.solar_mask_edit", text="Mask on terrain", icon='IMAGE_PLANE')
     row.operator("condor.solar_mask_save", text="Save mask", icon='FILE_TICK')
+    # only offered while the list isn't there; delete the file and it comes back
+    p = _farms_txt_path(context)
+    if p and not os.path.exists(p):
+        box.operator("condor.scan_solar_farms", text="Scan solar farms", icon='VIEWZOOM')
 
 
 # ---------------------------------------------------------------------------
@@ -1493,7 +1705,8 @@ def _unpatch_overpass_query():
 # Registration
 # ---------------------------------------------------------------------------
 _classes = [CONDOR_OT_import_solar, CONDOR_OT_flip_solar, CONDOR_OT_merge_solar,
-            CONDOR_OT_solar_mask_edit, CONDOR_OT_solar_mask_save]
+            CONDOR_OT_solar_mask_edit, CONDOR_OT_solar_mask_save,
+            CONDOR_OT_scan_solar_farms]
 
 
 def register():
