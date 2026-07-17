@@ -27,10 +27,9 @@ jobs:
           import re
           text = open("condor_buildings/__init__.py", encoding="utf-8").read()
           match = re.search(r'"version"\s*:\s*\((.*?)\)', text, re.S)
-          if match:
-              print(match.group(1).replace(",", ".").replace(" ", ""))
-          else:
+          if not match:
               raise Exception("Version not found")
+          print(match.group(1).replace(",", ".").replace(" ", ""))
           PY
           )
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -42,8 +41,9 @@ jobs:
           zip -r condor_buildings.zip condor_buildings
 
       - name: Create Release and upload ZIP
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: Condor Buildings v${{ steps.version.outputs.version }}
-          files: condor_buildings.zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.version.outputs.version }}" \
+            condor_buildings.zip \
+            --title "Condor Buildings v${{ steps.version.outputs.version }}"
