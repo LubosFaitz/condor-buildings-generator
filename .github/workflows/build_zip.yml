@@ -40,10 +40,16 @@ jobs:
           cp LICENSE condor_buildings/
           zip -r condor_buildings.zip condor_buildings
 
-      - name: Create Release and upload ZIP
+      - name: Create or update Release and upload ZIP
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v${{ steps.version.outputs.version }}" \
-            condor_buildings.zip \
-            --title "Condor Buildings v${{ steps.version.outputs.version }}"
+          TAG="v${{ steps.version.outputs.version }}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" condor_buildings.zip --clobber
+          else
+            gh release create "$TAG" \
+              condor_buildings.zip \
+              --title "Condor Buildings $TAG"
+          fi
