@@ -23,8 +23,8 @@ jobs:
       - name: Get addon version
         id: version
         run: |
-          VERSION=$(grep -o '"version": ([0-9, ]*)' condor_buildings/__init__.py | grep -o '[0-9, ]*' | tr -d ' ' | tr ',' '.')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          VERSION=$(grep -o '"version": *([0-9, ]*)' condor_buildings/__init__.py | sed 's/[^0-9,]//g' | tr ',' '.')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Prepare Blender ZIP package
         run: |
