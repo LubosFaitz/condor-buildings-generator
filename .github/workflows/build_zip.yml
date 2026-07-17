@@ -1,0 +1,24 @@
+name: Create Blender ZIP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  zip:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Stáhnout repozitář
+        uses: actions/checkout@v4
+
+      - name: Připravit ZIP pro Blender
+        run: |
+          cp README.md condor_buildings/
+          cp LICENCE condor_buildings/
+          zip -r condor_buildings.zip condor_buildings
+
+      - name: Uložit ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: condor_buildings.zip
+          path: condor_buildings.zip
