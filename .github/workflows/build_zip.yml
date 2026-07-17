@@ -1,6 +1,8 @@
 name: Create Blender ZIP
 
 "on":
+  workflow_dispatch:
+
   push:
     paths:
       - "condor_buildings/**"
