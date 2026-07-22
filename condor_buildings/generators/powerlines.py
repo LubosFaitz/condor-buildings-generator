@@ -192,8 +192,9 @@ class PylonTemplate:
     name: str
     verts: List[Tuple[float, float, float]] = field(default_factory=list)
     uvs: List[Tuple[float, float]] = field(default_factory=list)
-    # Each face: list of (vertex_index, uv_index), 0-based into verts / uvs.
-    faces: List[List[Tuple[int, int]]] = field(default_factory=list)
+    normals: List[Tuple[float, float, float]] = field(default_factory=list)
+    # Each face: list of (vertex_index, uv_index, normal_index), 0-based.
+    faces: List[List[Tuple[int, int, int]]] = field(default_factory=list)
 
     @property
     def height(self) -> float:
@@ -223,10 +224,11 @@ def pylon_texture_path() -> Optional[str]:
 
 
 def _load_obj_template(path: str) -> PylonTemplate:
-    """Parse a (small) OBJ pylon template: v / vt / f 'v/vt' tokens."""
+    """Parse a (small) OBJ pylon template: v / vt / vn / f 'v/vt/vn' tokens."""
     verts: List[Tuple[float, float, float]] = []
     uvs: List[Tuple[float, float]] = []
-    faces: List[List[Tuple[int, int]]] = []
+    normals: List[Tuple[float, float, float]] = []
+    faces: List[List[Tuple[int, int, int]]] = []
     name = os.path.splitext(os.path.basename(path))[0]
 
     with open(path, "r", encoding="utf-8") as f:
@@ -238,17 +240,21 @@ def _load_obj_template(path: str) -> PylonTemplate:
             elif line.startswith("vt "):
                 p = line.split()
                 uvs.append((float(p[1]), float(p[2])))
+            elif line.startswith("vn "):
+                p = line.split()
+                normals.append((float(p[1]), float(p[2]), float(p[3])))
             elif line.startswith("o "):
                 name = line[2:].strip()
             elif line.startswith("f "):
-                face: List[Tuple[int, int]] = []
+                face: List[Tuple[int, int, int]] = []
                 for tok in line.split()[1:]:
                     bits = tok.split("/")
                     vi = int(bits[0]) - 1
                     ti = int(bits[1]) - 1 if len(bits) > 1 and bits[1] else -1
-                    face.append((vi, ti))
+                    ni = int(bits[2]) - 1 if len(bits) > 2 and bits[2] else -1
+                    face.append((vi, ti, ni))
                 faces.append(face)
-    return PylonTemplate(name=name, verts=verts, uvs=uvs, faces=faces)
+    return PylonTemplate(name=name, verts=verts, uvs=uvs, normals=normals, faces=faces)
 
 
 def load_pylon_templates(assets_dir: Optional[str] = None) -> Dict[str, PylonTemplate]:
@@ -468,16 +474,30 @@ def _place_pylon(
     v_base = mesh.vertex_count()
     uv_base = mesh.uv_count()
 
+    # Initialise normal storage on the MeshData (dynamic attributes).
+    if not hasattr(mesh, '_normals'):
+        mesh._normals = []
+        mesh._face_normal_map = {}
+    n_base = len(mesh._normals)
+
     for vx, vy, vz in tmpl.verts:
         rx, ry = _rotz(vx, vy, c, s)
         mesh.add_vertex(rx + x, ry + y, vz + foot_z)
     for u, v in tmpl.uvs:
         mesh.add_uv(u, v)
+    # Rotate normals the same way as vertices and store them.
+    for nx, ny, nz in tmpl.normals:
+        rnx, rny = _rotz(nx, ny, c, s)
+        mesh._normals.append((rnx, rny, nz))
 
     for face in tmpl.faces:
-        vidx = [v_base + vi + 1 for vi, _ in face]
-        uvidx = [uv_base + (ti if ti >= 0 else 0) + 1 for _, ti in face]
+        vidx = [v_base + f[0] + 1 for f in face]
+        uvidx = [uv_base + (f[1] if f[1] >= 0 else 0) + 1 for f in face]
         mesh.add_polygon_with_uvs(vidx, uvidx)
+        # Store normal indices for this face (so exporter / converter can use them).
+        nidx = [n_base + f[2] + 1 for f in face if f[2] >= 0]
+        if len(nidx) == len(face):
+            mesh._face_normal_map[len(mesh.faces) - 1] = nidx
 
 
 def _cable_sections(sag: float) -> int:
@@ -545,6 +565,7 @@ def _add_cable(
             ring.append((vidx, uidx))
         rings.append(ring)
 
+    face_start = len(mesh.faces)
     for i in range(n_samples):
         for k in range(3):
             a = rings[i][k]
@@ -553,6 +574,10 @@ def _add_cable(
             d = rings[i + 1][k]
             mesh.add_quad_with_uvs(a[0], b[0], c[0], d[0],
                                    a[1], b[1], c[1], d[1])
+    if not hasattr(mesh, 'smooth_faces'):
+        mesh.smooth_faces = set()
+    mesh.smooth_faces.update(range(face_start, len(mesh.faces)))
+            
 
 
 # ---------------------------------------------------------------------------
@@ -582,8 +607,8 @@ def _place_ball(mesh: MeshData, tmpl: PylonTemplate,
     for u, v in tmpl.uvs:
         mesh.add_uv(u, v)
     for face in tmpl.faces:
-        vidx = [v_base + vi + 1 for vi, _ in face]
-        uvidx = [uv_base + (ti if ti >= 0 else 0) + 1 for _, ti in face]
+        vidx = [v_base + f[0] + 1 for f in face]
+        uvidx = [uv_base + (f[1] if f[1] >= 0 else 0) + 1 for f in face]
         mesh.add_polygon_with_uvs(vidx, uvidx)
 
 
@@ -844,11 +869,11 @@ def generate_powerline_meshes(
         _sl = math.hypot(xb - xa, yb - ya) or 1.0
         px, py = -(yb - ya) / _sl, (xb - xa) / _sl      # unit vector across the span
 
-        # Na portal jdou jen vodice z RAMEN. Zemnici drat (ten NEJVYSSI na vrsku
-        # stozaru) na portal nepatri -- ten vede po vrsku z pylonu na pylon a u
-        # portalu konci. Medium ma 4 uchyty, portal 3, takze bez tohohle by se
-        # parovanim podle strany zahodilo nektere rameno a zemnici by naopak vedl
-        # na portal.
+        # Only the ARM conductors go onto the gantry. The earth wire (the TOPMOST one
+        # on the tower) does not belong there -- it runs along the tops from pylon to
+        # pylon and ends at the gantry. A Medium has 4 attachments, the gantry 3, so
+        # without this the side-pairing would drop one arm and route the earth wire
+        # onto the gantry instead.
         def _drop_earth(att, other):
             if len(att) <= len(other):
                 return att
@@ -877,9 +902,9 @@ def generate_powerline_meshes(
     # pylons are stamped right here, as before -- they are not spaced or merged.
     towers: Dict[Tuple[float, float], List] = {}   # key -> [x, y, yaw, tmpl, tmpl1]
     line_spans: List[Tuple] = []                    # (attach_local, sag, [(keyA,keyB),...])
-    # Sloupy, pres ktere vedeni podle OSM pokracuje DOVNITR rozvodny -> z nich se
-    # napoji portal. Poznaji se tak, ze sousedni uzel teze cesty lezi uvnitr obrysu.
-    # Male pylony sem nepatri.
+    # Towers through which the line continues INTO the substation per OSM -> the
+    # gantry is wired from them. They are recognised by a neighbouring node of the
+    # same way lying inside the outline. Small pylons do not qualify.
     _feed_keys = set()
 
     for line in lines:
@@ -924,9 +949,9 @@ def generate_powerline_meshes(
 
         # Large/medium: no tower inside a substation yard (only small may stand there).
         if substation_polygons:
-            # Ktery uzel teto cesty lezi UVNITR dvora. Sloup, ktery je venku, ale jehoz
-            # soused na teze ceste je uvnitr, je ten, PRES ktery vedeni do rozvodny
-            # pokracuje -> prave z nej se napoji portal.
+            # Which node of this way lies INSIDE the yard. The tower standing outside
+            # but whose neighbour on the same way is inside is the one THROUGH which
+            # the line continues into the substation -> the gantry is wired from it.
             _in = [_point_in_polys(xy[j][0], xy[j][1], substation_polygons)
                    for j in range(n)]
             if not is_small:
@@ -1139,10 +1164,14 @@ def generate_powerline_meshes(
         for k, t in towers.items():
             if "substation" in t[3].name.lower():
                 continue
-            if _fence_dist(t[0], t[1]) >= SUBSTATION_ENTRY_DIST:
-                continue                      # not an entry pylon
+            if k not in _terminal_pylons and k not in _feed_keys:
+                continue
+            if abs(t[0]) > patch_half or abs(t[1]) > patch_half:
+                continue
             nbrs = _neighbours.get(k)
             if not nbrs:
+                continue
+            if any(nbr in towers and (abs(towers[nbr][0]) > patch_half or abs(towers[nbr][1]) > patch_half) for nbr in nbrs):
                 continue
             # Incoming line = toward the neighbour FURTHEST from the fence (the run out
             # into the country). The crossarm is built PERPENDICULAR to it, so the three
@@ -1152,7 +1181,7 @@ def generate_powerline_meshes(
             base = math.atan2(cdy, cdx) + math.pi / 2.0
 
             # Nearest fence edge direction, to lean the crossarm toward the outline.
-            best_dir, bd = None, SUBSTATION_ENTRY_DIST
+            best_dir, bd = None, SUBSTATION_ZONE_RADIUS
             for (ax, ay, bx, by) in _edges:
                 vx, vy = bx - ax, by - ay
                 L2 = vx * vx + vy * vy
@@ -1182,7 +1211,11 @@ def generate_powerline_meshes(
         for k, t in towers.items():
             if "substation" in t[3].name.lower():
                 continue
-            bi, bd = None, SUBSTATION_ENTRY_DIST
+            if k not in _terminal_pylons and k not in _feed_keys:
+                continue
+            if abs(t[0]) > patch_half or abs(t[1]) > patch_half:
+                continue
+            bi, bd = None, SUBSTATION_ZONE_RADIUS
             for ei, (ax, ay, bx, by) in enumerate(_edges):
                 vx, vy = bx - ax, by - ay
                 L2 = vx * vx + vy * vy
@@ -1275,8 +1308,8 @@ def generate_powerline_meshes(
         gantries_to_add = []
         for line_idx, (attach_local, sag, spans, line) in enumerate(line_spans):
             for k in towers:
-                # Portal dostane sloup, kterym vedeni konci (drat z jedne strany),
-                # NEBO sloup, pres ktery vedeni podle OSM pokracuje do rozvodny.
+                # A gantry goes to a tower where the line ends (wire from one side),
+                # OR to a tower through which the line continues into the substation per OSM.
                 if k in _terminal_pylons or k in _feed_keys:
                     is_in_line = any(k == ka or k == kb for (ka, kb) in spans)
                     if not is_in_line:
@@ -1284,6 +1317,8 @@ def generate_powerline_meshes(
                     if any(g[3] == k for g in gantries_to_add):
                         continue                      # this pylon already got a gantry
                     tx, ty = towers[k][0], towers[k][1]
+                    if abs(tx) > patch_half or abs(ty) > patch_half:
+                        continue
                     if not _near_substation(tx, ty):
                         continue
                     
@@ -1662,6 +1697,16 @@ def generate_powerline_meshes(
                 _terminal_pylons.add(g_key)
                 _gantry_keys.add(g_key)
                 line_spans[line_idx][2].append((k_term, g_key))
+                if k_term in towers:
+                    # Do not turn towards the substation if it has a neighbour outside the patch bounds, or it is a Pylon_Medium
+                    nbrs_term = _neighbours.get(k_term, [])
+                    has_outside_nbr = any(
+                        nbr in towers and (abs(towers[nbr][0]) > patch_half or abs(towers[nbr][1]) > patch_half)
+                        for nbr in nbrs_term
+                    )
+                    is_medium = towers[k_term][3] and "medium" in towers[k_term][3].name.lower()
+                    if not has_outside_nbr and not is_medium:
+                        towers[k_term][2] = yaw
 
     # --- Phase 3: stamp the large/medium towers, then the cables (and warning balls). ---
     for k, t in towers.items():
@@ -1731,7 +1776,19 @@ def _spin_blades(tmpl: PylonTemplate, theta: float) -> PylonTemplate:
     for (x, y, z) in tmpl.verts:
         dx, dz = x - hx, z - hz
         verts.append((hx + dx * c + dz * s, y, hz - dx * s + dz * c))
-    return PylonTemplate(name=tmpl.name, verts=verts, uvs=tmpl.uvs, faces=tmpl.faces)
+        
+    # Rotate normals around Y axis the same way (without hub translation)
+    normals = []
+    for (nx, ny, nz) in tmpl.normals:
+        normals.append((nx * c + nz * s, ny, -nx * s + nz * c))
+        
+    return PylonTemplate(
+        name=tmpl.name, 
+        verts=verts, 
+        uvs=tmpl.uvs, 
+        normals=normals, 
+        faces=tmpl.faces
+    )
 
 
 def generate_wind_turbines_mesh(

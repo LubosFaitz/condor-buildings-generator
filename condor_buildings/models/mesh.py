@@ -243,6 +243,18 @@ class MeshData:
             new_face_uv = [idx + uv_offset for idx in face_uv]
             self.face_uvs.append(new_face_uv)
 
+        other_normals = getattr(other, '_normals', [])
+        if other_normals:
+            if not hasattr(self, '_normals'):
+                self._normals = []
+                self._face_normal_map = {}
+            normal_offset = len(self._normals)
+            face_offset = len(self.faces) - len(other.faces)
+            self._normals.extend(other_normals)
+            other_fn = getattr(other, '_face_normal_map', {})
+            for fi, fn in other_fn.items():
+                self._face_normal_map[face_offset + fi] = [n + normal_offset for n in fn]
+
     def clear(self) -> None:
         """Clear all vertices, UVs, and faces."""
         self.vertices.clear()

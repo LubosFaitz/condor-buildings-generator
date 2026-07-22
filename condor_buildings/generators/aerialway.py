@@ -228,7 +228,19 @@ def _tilt_rollers(tmpl: PylonTemplate, pitch: float, pivot) -> PylonTemplate:
     for (x, y, z) in tmpl.verts:
         dx, dz = x - px, z - pz
         verts.append((px + dx * c - dz * s, y, pz + dx * s + dz * c))
-    return PylonTemplate(name=tmpl.name, verts=verts, uvs=tmpl.uvs, faces=tmpl.faces)
+    
+    # Rotate normals the same way (around Y axis, pivot offset does not apply to direction vectors)
+    normals = []
+    for (nx, ny, nz) in tmpl.normals:
+        normals.append((nx * c - nz * s, ny, nx * s + nz * c))
+        
+    return PylonTemplate(
+        name=tmpl.name, 
+        verts=verts, 
+        uvs=tmpl.uvs, 
+        normals=normals, 
+        faces=tmpl.faces
+    )
 
 
 def _pitch_at(node_world, xy, j) -> float:

@@ -25,7 +25,7 @@ def meshdata_to_blender(
     name: str = "building",
     collection: Optional[bpy.types.Collection] = None,
     use_osm_id: bool = True,
-    recalc_normals: bool = False
+    recalc_normals: bool = False,
 ) -> bpy.types.Object:
     """
     Convert a MeshData instance to a Blender mesh object.
@@ -85,8 +85,36 @@ def meshdata_to_blender(
     if recalc_normals:
         _recalc_normals_outside(mesh)
 
+    smooth = getattr(mesh_data, 'smooth_faces', set())
+    for i, poly in enumerate(mesh.polygons):
+        if i in smooth:
+            poly.use_smooth = True        
+
+        
+
     # Update mesh to compute normals, etc.
     mesh.update()
+
+    # Apply custom normals from OBJ templates (pylons, wind turbines, etc.)
+    # so their original shading from assets/ is preserved exactly.
+    obj_normals = getattr(mesh_data, '_normals', [])
+    face_normal_map = getattr(mesh_data, '_face_normal_map', {})
+    if obj_normals and face_normal_map:
+        # Backward compatibility for Blender < 4.0
+        if hasattr(mesh, 'calc_normals_split'):
+            mesh.calc_normals_split()
+        # Start from the current (auto-computed) split normals.
+        loop_normals = [tuple(loop.normal) for loop in mesh.loops]
+        # Override loops that belong to faces loaded from OBJ templates.
+        for fi, poly in enumerate(mesh.polygons):
+            if fi in face_normal_map:
+                fn = face_normal_map[fi]
+                for li_off in range(poly.loop_total):
+                    if li_off < len(fn):
+                        ni = fn[li_off] - 1          # 1-based -> 0-based
+                        if 0 <= ni < len(obj_normals):
+                            loop_normals[poly.loop_start + li_off] = obj_normals[ni]
+        mesh.normals_split_custom_set(loop_normals)
 
     # Link object to collection
     if collection is None:
@@ -417,6 +445,30 @@ def blender_obj_to_meshdata(obj: bpy.types.Object, osm_id: str = None):
             if key not in uv_map:
                 uv_map[key] = len(md.uvs) + 1
                 md.uvs.append((uv.x, uv.y))
+
+    # Read smooth faces
+    md.smooth_faces = set()
+    for fi, poly in enumerate(mesh.polygons):
+        if poly.use_smooth:
+            md.smooth_faces.add(fi)
+
+    # Read custom split normals if they are active
+    if getattr(mesh, 'has_custom_normals', False):
+        if hasattr(mesh, 'calc_normals_split'):
+            mesh.calc_normals_split()
+        md._normals = []
+        md._face_normal_map = {}
+        normal_map = {}
+        for poly_idx, poly in enumerate(mesh.polygons):
+            face_normals = []
+            for loop_idx in poly.loop_indices:
+                normal = mesh.loops[loop_idx].normal
+                key = (round(normal.x, 6), round(normal.y, 6), round(normal.z, 6))
+                if key not in normal_map:
+                    normal_map[key] = len(md._normals) + 1
+                    md._normals.append((normal.x, normal.y, normal.z))
+                face_normals.append(normal_map[key])
+            md._face_normal_map[poly_idx] = face_normals
 
     for poly in mesh.polygons:
         face = [li + 1 for li in poly.vertices]

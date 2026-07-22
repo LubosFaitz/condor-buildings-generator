@@ -316,39 +316,51 @@ def process_patch(context, props, patch_id, paths):
 # triangulated, normals, materials/textures). No splitting.
 
 class _FMObj:
-    """One 'o' object parsed from a file-mode OBJ (global 1-based v / vt)."""
+    """One 'o' object parsed from a file-mode OBJ (global 1-based v / vt / vn)."""
 
     def __init__(self, name):
         self.name = name
         self.v = []        # "x y z" strings
         self.vt = []       # "u v" strings
-        self.faces = []    # list of faces; each is a list of (vi, ti), ti None
+        self.vn = []       # "x y z" strings
+        self.faces = []    # list of faces; each is a list of (vi, ti, ni)
+        self.smooth_faces = set()
 
 
 def _parse_filemode_obj(obj_path):
     """Parse the file-mode OBJ into a list of _FMObj."""
     objects = []
     cur = None
+    is_smooth = False
     with open(obj_path, 'r', encoding='utf-8') as f:
         for raw in f:
             s = raw.strip()
             if s.startswith('o '):
                 cur = _FMObj(s[2:].strip())
                 objects.append(cur)
+                is_smooth = False
+            elif s.startswith('s '):
+                val = s[2:].strip().lower()
+                is_smooth = (val != 'off' and val != '0')
             elif cur is None:
                 continue
             elif s.startswith('vt '):
                 cur.vt.append(s[3:].strip())
             elif s.startswith('v '):
                 cur.v.append(s[2:].strip())
+            elif s.startswith('vn '):
+                cur.vn.append(s[3:].strip())
             elif s.startswith('f '):
                 corners = []
                 for tok in s[2:].split():
                     p = tok.split('/')
                     vi = int(p[0])
                     ti = int(p[1]) if len(p) >= 2 and p[1] != '' else None
-                    corners.append((vi, ti))
+                    ni = int(p[2]) if len(p) >= 3 and p[2] != '' else None
+                    corners.append((vi, ti, ni))
                 cur.faces.append(corners)
+                if is_smooth:
+                    cur.smooth_faces.add(len(cur.faces) - 1)
     return objects
 
 
@@ -359,13 +371,15 @@ def _filemode_objs_to_groups(objects):
     offsets = []
     v_off = 0
     vt_off = 0
+    vn_off = 0
     for o in objects:
-        offsets.append((v_off, vt_off))
+        offsets.append((v_off, vt_off, vn_off))
         v_off += len(o.v)
         vt_off += len(o.vt)
+        vn_off += len(o.vn)
 
     groups = {}
-    for o, (vo, to) in zip(objects, offsets):
+    for o, (vo, to, no) in zip(objects, offsets):
         md = MeshData()
         for s in o.v:
             p = s.split()
@@ -373,11 +387,27 @@ def _filemode_objs_to_groups(objects):
         for s in o.vt:
             p = s.split()
             md.uvs.append((float(p[0]), float(p[1])))
+
+        if len(o.vn) > 0:
+            md._normals = []
+            for s in o.vn:
+                p = s.split()
+                md._normals.append((float(p[0]), float(p[1]), float(p[2])))
+            md._face_normal_map = {}
+
         has_uv = len(o.vt) > 0
-        for face in o.faces:
-            md.faces.append([vi - vo for (vi, _ti) in face])
-            if has_uv and all(ti is not None for (_vi, ti) in face):
-                md.face_uvs.append([ti - to for (_vi, ti) in face])
+        has_vn = len(o.vn) > 0
+        md.smooth_faces = set()
+
+        for fi, face in enumerate(o.faces):
+            md.faces.append([vi - vo for (vi, _ti, _ni) in face])
+            if has_uv and all(ti is not None for (_vi, ti, _ni) in face):
+                md.face_uvs.append([ti - to for (_vi, ti, _ni) in face])
+            if has_vn and all(ni is not None for (_vi, _ti, ni) in face):
+                md._face_normal_map[fi] = [ni - no for (_vi, _ti, ni) in face]
+            if fi in o.smooth_faces:
+                md.smooth_faces.add(fi)
+
         if len(md.face_uvs) != len(md.faces):
             md.face_uvs = []
         groups[o.name] = md
@@ -439,20 +469,27 @@ def _set_axis_swap_header_true(obj_path):
 def append_chimney_plain(obj_path, chimney_md):
     """
     Append a 'chimney' object to a plain file-mode OBJ (no MTL). chimney_md is
-    already Condor-swapped; global v/vt indices continue from the existing file.
+    already Condor-swapped; global v/vt/vn indices continue from the existing file.
     """
     if chimney_md is None or chimney_md.is_empty():
         return
     v_count = 0
     vt_count = 0
+    vn_count = 0
     with open(obj_path, 'r', encoding='utf-8') as f:
         for line in f:
             if line.startswith('v '):
                 v_count += 1
             elif line.startswith('vt '):
                 vt_count += 1
+            elif line.startswith('vn '):
+                vn_count += 1
 
     has_uv = len(chimney_md.uvs) > 0 and len(chimney_md.face_uvs) == len(chimney_md.faces)
+    normals = getattr(chimney_md, '_normals', [])
+    has_vn = len(normals) > 0
+    face_normal_map = getattr(chimney_md, '_face_normal_map', {})
+
     with open(obj_path, 'a', encoding='utf-8') as f:
         f.write("\no chimney\n")
         for (x, y, z) in chimney_md.vertices:
@@ -460,12 +497,20 @@ def append_chimney_plain(obj_path, chimney_md):
         if has_uv:
             for (u, v) in chimney_md.uvs:
                 f.write(f"vt {u:.6f} {v:.6f}\n")
+        if has_vn:
+            for (nx, ny, nz) in normals:
+                f.write(f"vn {nx:.6f} {ny:.6f} {nz:.6f}\n")
+
         for i, face in enumerate(chimney_md.faces):
-            if has_uv:
-                fu = chimney_md.face_uvs[i]
-                f.write("f " + " ".join(f"{vi + v_count}/{ti + vt_count}" for vi, ti in zip(face, fu)) + "\n")
-            else:
-                f.write("f " + " ".join(str(vi + v_count) for vi in face) + "\n")
+            fu = chimney_md.face_uvs[i] if has_uv else None
+            fn = face_normal_map.get(i) if has_vn else None
+            parts = []
+            for j, vi in enumerate(face):
+                v_idx = vi + v_count
+                u_str = f"/{fu[j] + vt_count}" if fu else ("/" if fn else "")
+                n_str = f"/{fn[j] + vn_count}" if fn else ""
+                parts.append(f"{v_idx}{u_str}{n_str}")
+            f.write("f " + " ".join(parts) + "\n")
     print(f"[chimney] appended chimney to {os.path.basename(obj_path)}")
 
 
@@ -477,19 +522,26 @@ def _parse_obj_as_meshdata(path):
     """Parse a simple OBJ asset (chimney_big/small.obj) into one MeshData."""
     from ..models.mesh import MeshData
     md = MeshData()
+    md._normals = []
+    md._face_normal_map = {}
     with open(path, 'r', encoding='utf-8') as f:
         for raw in f:
             s = raw.strip()
             if s.startswith('v '):
                 p = s.split()
                 md.vertices.append((float(p[1]), float(p[2]), float(p[3])))
+            elif s.startswith('vn '):
+                p = s.split()
+                md._normals.append((float(p[1]), float(p[2]), float(p[3])))
             elif s.startswith('vt '):
                 p = s.split()
                 md.uvs.append((float(p[1]), float(p[2])))
             elif s.startswith('f '):
                 vids = []
                 tids = []
+                nids = []
                 ok_uv = True
+                ok_vn = True
                 for tok in s[2:].split():
                     parts = tok.split('/')
                     vids.append(int(parts[0]))
@@ -497,9 +549,16 @@ def _parse_obj_as_meshdata(path):
                         tids.append(int(parts[1]))
                     else:
                         ok_uv = False
+                    if len(parts) >= 3 and parts[2]:
+                        nids.append(int(parts[2]))
+                    else:
+                        ok_vn = False
+                fi = len(md.faces)
                 md.faces.append(vids)
                 if ok_uv and len(tids) == len(vids):
                     md.face_uvs.append(tids)
+                if ok_vn and len(nids) == len(vids):
+                    md._face_normal_map[fi] = nids
     if len(md.face_uvs) != len(md.faces):
         md.face_uvs = []
     return md

@@ -1,5 +1,6 @@
 # Blender 5.1.2
 # www.blender.org
+mtllib pylons.mtl
 o Pylon_AerialCab_ns
 v -1.117014 -1.117018 22.340363
 v -1.117014 1.117018 22.340363
@@ -40,6 +41,7 @@ vt 0.306784 0.492180
 vt 0.405936 0.492180
 vt 0.405936 0.590804
 s 1
+usemtl pylones
 f 1/1 5/2 3/3
 f 4/3 6/4 2/1
 f 5/2 1/1 7/4

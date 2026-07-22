@@ -63,6 +63,7 @@ def export_obj(
             continue
 
         face_start = len(merged.faces) + 1  # 1-indexed for counting
+        face_start_0 = len(merged.faces)     # 0-indexed for normal/smooth maps
         vertex_offset = len(merged.vertices)
         uv_offset = len(merged.uvs)
 
@@ -83,6 +84,28 @@ def export_obj(
         for face_uv in mesh.face_uvs:
             new_face_uv = [idx + uv_offset for idx in face_uv]
             merged.face_uvs.append(new_face_uv)
+
+        # Transfer normals from OBJ templates (pylons etc.)
+        mesh_normals = getattr(mesh, '_normals', [])
+        mesh_fnmap = getattr(mesh, '_face_normal_map', {})
+        if mesh_normals:
+            if not hasattr(merged, '_normals'):
+                merged._normals = []
+                merged._face_normal_map = {}
+            normal_offset = len(merged._normals)
+            merged._normals.extend(mesh_normals)
+            for fi, nidx in mesh_fnmap.items():
+                merged._face_normal_map[fi + face_start_0] = [
+                    ni + normal_offset for ni in nidx
+                ]
+
+        # Transfer smooth_faces (cables)
+        mesh_smooth = getattr(mesh, 'smooth_faces', set())
+        if mesh_smooth:
+            if not hasattr(merged, 'smooth_faces'):
+                merged.smooth_faces = set()
+            for fi in mesh_smooth:
+                merged.smooth_faces.add(fi + face_start_0)
 
         if use_groups and mesh.osm_id:
             group_info.append({
@@ -130,6 +153,14 @@ def export_obj(
                 f.write(f"vt {u:.6f} {v:.6f}\n")
             f.write("\n")
 
+        # Write normals (if present from OBJ templates)
+        obj_normals = getattr(merged, '_normals', [])
+        has_normals = len(obj_normals) > 0
+        if has_normals:
+            for nx, ny, nz in obj_normals:
+                f.write(f"vn {nx:.6f} {ny:.6f} {nz:.6f}\n")
+            f.write("\n")
+
         # Write faces (with optional groups)
         if use_groups and group_info:
             face_idx = 0
@@ -152,12 +183,21 @@ def export_obj(
                 f.write(f"f {face_str}\n")
         else:
             # No groups, just write all faces
+            face_normal_map = getattr(merged, '_face_normal_map', {})
             for i, face in enumerate(merged.faces):
                 if has_uvs:
                     face_uv = merged.face_uvs[i]
-                    face_str = " ".join(f"{v}/{uv}" for v, uv in zip(face, face_uv))
+                    if has_normals and i in face_normal_map:
+                        fn = face_normal_map[i]
+                        face_str = " ".join(
+                            f"{v}/{uv}/{n}" for v, uv, n in zip(face, face_uv, fn)
+                        )
+                    else:
+                        face_str = " ".join(f"{v}/{uv}" for v, uv in zip(face, face_uv))
                 else:
                     face_str = " ".join(str(idx) for idx in face)
+                if i in getattr(merged, 'smooth_faces', set()):
+                    f.write("s 1\n")
                 f.write(f"f {face_str}\n")
 
     # Get file size
@@ -805,49 +845,78 @@ def export_condor_obj_mtl(
 
             # Build triangulated faces (with optional per-triangle normals)
             normals = []
-            tri_records = []  # each: (vidx3, uvidx3_or_None, nidx_or_None) 1-indexed local
+            obj_normals = getattr(mesh, '_normals', [])
+            face_normal_map = getattr(mesh, '_face_normal_map', {})
+            smooth_faces = getattr(mesh, 'smooth_faces', set())
+            
+            if include_normals and obj_normals:
+                for n in obj_normals:
+                    normals.append(_condor_xform(n, axis_swap))
+
+            tri_records = []  # each: (vidx3, uvidx3_or_None, nidx3_or_None, is_smooth) 1-indexed local
             for fi, face in enumerate(mesh.faces):
                 n = len(face)
                 if n < 3:
                     continue
                 fuv = mesh.face_uvs[fi] if (has_uvs and fi < len(mesh.face_uvs)) else None
+                has_custom_f = include_normals and (fi in face_normal_map)
+                fn = face_normal_map[fi] if has_custom_f else None
+                is_smooth = fi in smooth_faces
+                
                 tris = _tri_fan(n) if triangulate else [tuple(range(n))]
                 for tri in tris:
                     if len(tri) != 3:
                         # Non-triangulated n-gon path keeps polygon as-is
                         vidx = tuple(face[p] for p in tri)
                         uvidx = tuple(fuv[p] for p in tri) if fuv else None
-                        tri_records.append((vidx, uvidx, None))
+                        nidx = tuple(fn[p] for p in tri) if has_custom_f else None
+                        tri_records.append((vidx, uvidx, nidx, is_smooth))
                         continue
+                    
                     a, b, c = tri
                     vidx = (face[a], face[b], face[c])
                     uvidx = (fuv[a], fuv[b], fuv[c]) if fuv else None
-                    nidx = None
-                    if include_normals:
+                    
+                    if has_custom_f:
+                        # Use custom normal indices (already added to normals list)
+                        nidx = (fn[a], fn[b], fn[c])
+                    elif include_normals:
+                        # Calculate flat face normal
                         p0 = tverts[vidx[0] - 1]
                         p1 = tverts[vidx[1] - 1]
                         p2 = tverts[vidx[2] - 1]
-                        normals.append(_face_normal(p0, p1, p2))
-                        nidx = len(normals)  # 1-indexed within object
-                    tri_records.append((vidx, uvidx, nidx))
+                        flat_n = _face_normal(p0, p1, p2)
+                        normals.append(flat_n)
+                        flat_idx = len(normals)
+                        nidx = (flat_idx, flat_idx, flat_idx)
+                    else:
+                        nidx = None
+                    tri_records.append((vidx, uvidx, nidx, is_smooth))
 
             if include_normals:
                 for nx, ny, nz in normals:
                     f.write(f"vn {nx:.6f} {ny:.6f} {nz:.6f}\n")
 
-            for vidx, uvidx, nidx in tri_records:
+            current_smooth = False
+            for vidx, uvidx, nidx, is_smooth in tri_records:
+                if is_smooth != current_smooth:
+                    current_smooth = is_smooth
+                    f.write("s 1\n" if is_smooth else "s off\n")
+                    
                 parts = []
                 for k in range(len(vidx)):
                     vref = vidx[k] + vertex_offset
                     if uvidx is not None:
                         tref = uvidx[k] + uv_offset
                         if nidx is not None:
-                            parts.append(f"{vref}/{tref}/{nidx + normal_offset}")
+                            nref = nidx[k] + normal_offset
+                            parts.append(f"{vref}/{tref}/{nref}")
                         else:
                             parts.append(f"{vref}/{tref}")
                     else:
                         if nidx is not None:
-                            parts.append(f"{vref}//{nidx + normal_offset}")
+                            nref = nidx[k] + normal_offset
+                            parts.append(f"{vref}//{nref}")
                         else:
                             parts.append(f"{vref}")
                 f.write("f " + " ".join(parts) + "\n")

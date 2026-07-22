@@ -1,12 +1,6 @@
-# Blender 5.1.2 MTL File: 'test090.blend'
-# www.blender.org
-
 newmtl condor_transmitter
-Ns 250.000000
-Ka 1.000000 1.000000 1.000000
-Ks 0.500000 0.500000 0.500000
-Ke 0.000000 0.000000 0.000000
-Ni 1.500000
-d 1.000000
-illum 2
+Kd 1 1 1
+Ks 0 0 0
+Ns 0
+d 12
 map_Kd transmitter.dds

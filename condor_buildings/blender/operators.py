@@ -957,8 +957,9 @@ class CONDOR_OT_import_buildings(Operator):
         props.last_import_time_ms = elapsed_ms
         props.last_patches_processed = patches_processed
 
-        # --- Az je vsechno vygenerovane, smaz pomocny obrys rozvodny. Slouzi jen
-        # behem generovani (portaly se podle nej umistuji) a do vysledku nepatri.
+        # --- Once everything is generated, delete the substation outline helper. It
+        # only serves during generation (gantries are placed by it) and is not part
+        # of the result.
         for _o in [o for o in bpy.data.objects if o.name.startswith("substation_")]:
             bpy.data.objects.remove(_o, do_unlink=True)
 
