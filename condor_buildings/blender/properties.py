@@ -19,7 +19,7 @@ from bpy.props import (
     BoolProperty,
     IntProperty,
 )
-from bpy.types import PropertyGroup
+from bpy.types import AddonPreferences, PropertyGroup
 import os
 
 _turbine_slider_pos = 0.0
@@ -508,9 +508,106 @@ class CondorBuildingsProperties(PropertyGroup):
     )
 
 
+class CondorBuildingsPreferences(AddonPreferences):
+    """Add-on preferences (Edit > Preferences > Add-ons > Condor Buildings).
+
+    Terrain smoothing lives here instead of the sidebar panel: Blender stores
+    add-on preferences in userpref.blend, so the settings are remembered across
+    scenes and Blender restarts without the addon keeping its own file.
+    """
+
+    # Package root ("condor_buildings"), which is what Blender registers.
+    bl_idname = __package__.split('.')[0]
+
+    terrain_smooth_enable: BoolProperty(
+        name="Enable Laplacian Smooth Modifier for Terrain (Tessellation Simulation)",
+        description=("Place all autogen (buildings, powerlines, aerialways, bridges, "
+                     "turbines, solar, substations, chimneys, transmitters) on a "
+                     "Laplacian-smoothed terrain, which approximates the surface "
+                     "Condor produces by tessellation. Off = original terrain"),
+        default=False,
+    )
+
+    terrain_smooth_repeat: IntProperty(
+        name="Repeat",
+        description="Smooth modifier Repeat (number of smoothing iterations)",
+        default=2,
+        min=1,
+        max=50,
+    )
+
+    terrain_smooth_lambda: FloatProperty(
+        name="Lambda Factor",
+        description="Smooth modifier Lambda Factor (smoothing strength)",
+        default=4.0,
+        min=0.0,
+        max=100.0,
+    )
+
+    terrain_smooth_border: FloatProperty(
+        name="Lambda Border",
+        description=("Smooth modifier Lambda Border. 0 keeps the patch edges in "
+                     "place, so no gap appears towards the neighbouring patch"),
+        default=0.0,
+        min=0.0,
+        max=100.0,
+    )
+
+    terrain_smooth_axis_x: BoolProperty(
+        name="X",
+        description="Smooth modifier Axis X (leave off - terrain must not shift sideways)",
+        default=False,
+    )
+
+    terrain_smooth_axis_y: BoolProperty(
+        name="Y",
+        description="Smooth modifier Axis Y (leave off - terrain must not shift sideways)",
+        default=False,
+    )
+
+    terrain_smooth_axis_z: BoolProperty(
+        name="Z",
+        description="Smooth modifier Axis Z (heights - this is the one that matters)",
+        default=True,
+    )
+
+    terrain_smooth_preserve_volume: BoolProperty(
+        name="Preserve Volume",
+        description="Smooth modifier Preserve Volume",
+        default=True,
+    )
+
+    terrain_smooth_normalized: BoolProperty(
+        name="Normalized",
+        description="Smooth modifier Normalized",
+        default=True,
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "terrain_smooth_enable")
+
+        # Same fields, same order as the Smooth (Laplacian) modifier panel.
+        col = layout.column(align=True)
+        col.enabled = self.terrain_smooth_enable
+        col.prop(self, "terrain_smooth_repeat")
+        col.prop(self, "terrain_smooth_lambda")
+        col.prop(self, "terrain_smooth_border")
+
+        row = col.row(align=True)
+        row.label(text="Axis")
+        row.prop(self, "terrain_smooth_axis_x", toggle=True)
+        row.prop(self, "terrain_smooth_axis_y", toggle=True)
+        row.prop(self, "terrain_smooth_axis_z", toggle=True)
+
+        col.prop(self, "terrain_smooth_preserve_volume")
+        col.prop(self, "terrain_smooth_normalized")
+
+
 # Registration
 _classes = [
     CondorBuildingsProperties,
+    CondorBuildingsPreferences,
 ]
 
 

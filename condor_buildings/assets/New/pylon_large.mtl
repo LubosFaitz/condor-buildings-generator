@@ -1,0 +1,12 @@
+# Blender 5.1.2 MTL File: 'Pylon_Large_New_LOD0.blend'
+# www.blender.org
+
+newmtl pylones
+Ns 1000.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.000000 0.000000 0.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 1
+map_Kd C:/Users/lubos/Desktop/Condor_OSM_Exporter 1.1/assets/CondorV3/Pylons.dds

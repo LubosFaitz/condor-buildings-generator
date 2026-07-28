@@ -27,10 +27,10 @@ went through - so the list on disk is never a half-finished one. (The add-on's "
 farms" button goes by exactly that: no file = not done yet.) The cache is deleted at the
 same moment; after an error both the .part and the cache stay, to pick up from.
 
-Run it (from the command line, Blender is not needed - this is a standalone helper, the
-add-on never imports it):
-    python blender/solar_scan.py "D:\\Condor3BETA" Czech_Republic
-    python blender/solar_scan.py              (uses CONDOR_DIR / LANDSCAPE below)
+Normally the add-on's "Scan solar farms" button starts it and hands over the Condor
+folder and the landscape from its panel. It can also be run by hand (Blender is not
+needed - this is a standalone helper, the add-on never imports it):
+    python blender/solar_scan.py <Condor folder> <landscape>
 """
 
 import os
@@ -43,9 +43,9 @@ import urllib.parse
 import urllib.error
 import xml.etree.ElementTree as ET
 
-# --- defaults (command line arguments override them) -----------------------
-CONDOR_DIR = r"D:\Condor3BETA"
-LANDSCAPE = "Czech_Republic"
+# The Condor folder and the landscape are always passed in by the caller - the
+# add-on's "Scan solar farms" button hands over what is set in its panel. No path
+# is written here, so this works the same on anybody's machine.
 
 OUT_NAME = "solar_farms.txt"
 # The file is mostly read by people from abroad, hence English. The scenery name is filled in.
@@ -231,8 +231,12 @@ def _write(out_path, hits, land):
 
 
 def main():
-    condor = sys.argv[1] if len(sys.argv) > 1 else CONDOR_DIR
-    land = sys.argv[2] if len(sys.argv) > 2 else LANDSCAPE
+    if len(sys.argv) < 3:
+        print("Usage: python solar_scan.py <Condor folder> <landscape>")
+        print('   e.g. python solar_scan.py "C:\\Condor3" My_Landscape')
+        return 1
+    condor = sys.argv[1]
+    land = sys.argv[2]
     work = os.path.join(condor, "Landscapes", land, "Working")
     hm_dir = os.path.join(work, "HeightMaps")
     if not os.path.isdir(hm_dir):

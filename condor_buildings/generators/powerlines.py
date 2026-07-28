@@ -602,14 +602,38 @@ def _place_ball(mesh: MeshData, tmpl: PylonTemplate,
     """Stamp a uniformly-scaled ball template centred at (x, y, z)."""
     v_base = mesh.vertex_count()
     uv_base = mesh.uv_count()
+
+    # Same normal handling as _place_pylon, so the ball keeps its shading in the
+    # export instead of falling back to flat per-triangle normals (faceted look).
+    if not hasattr(mesh, '_normals'):
+        mesh._normals = []
+        mesh._face_normal_map = {}
+    n_base = len(mesh._normals)
+
     for vx, vy, vz in tmpl.verts:
         mesh.add_vertex(vx * scale + x, vy * scale + y, vz * scale + z)
     for u, v in tmpl.uvs:
         mesh.add_uv(u, v)
+    # The ball is never rotated, so model normals go in unchanged. A model with
+    # no normals gets radial ones (the template is already centred on its own
+    # bbox), which is exactly the smooth sphere shading.
+    from_model = bool(tmpl.normals)
+    if from_model:
+        mesh._normals.extend(tmpl.normals)
+    else:
+        for vx, vy, vz in tmpl.verts:
+            d = math.sqrt(vx * vx + vy * vy + vz * vz)
+            mesh._normals.append((vx / d, vy / d, vz / d) if d > 1e-9 else (0.0, 0.0, 1.0))
+
     for face in tmpl.faces:
         vidx = [v_base + f[0] + 1 for f in face]
         uvidx = [uv_base + (f[1] if f[1] >= 0 else 0) + 1 for f in face]
         mesh.add_polygon_with_uvs(vidx, uvidx)
+        # Model normals are indexed per corner (f[2]), radial ones per vertex (f[0]).
+        nidx = ([n_base + f[2] + 1 for f in face if f[2] >= 0] if from_model
+                else [n_base + f[0] + 1 for f in face])
+        if len(nidx) == len(face):
+            mesh._face_normal_map[len(mesh.faces) - 1] = nidx
 
 
 def _place_balls_on_cable(mesh, ball_tmpl, scale, pa, pb, sag, spacing) -> int:
@@ -1891,7 +1915,8 @@ def _main() -> None:
     osm_path = args.osm or os.path.join(args.patch_dir, "map_21.osm")
     result = parse_powerlines(osm_path, projector)
 
-    terrain = load_terrain(os.path.join(args.patch_dir, f"h{args.patch_id}.obj"))
+    from ..blender.terrain_smooth import load_terrain_smoothed
+    terrain = load_terrain_smoothed(args.patch_dir, args.patch_id)
 
     mesh, _mesh_lod1, stats = generate_powerline_meshes(
         result.lines, terrain, draw_cables=not args.no_cables

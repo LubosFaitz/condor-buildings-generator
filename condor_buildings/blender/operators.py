@@ -106,6 +106,60 @@ def _copy_asset_textures_for_result(result, paths):
         _copy_asset_texture_if_missing(os.path.join(pylons_dir, "WindTurbine.dds"), dest_dir, "WindTurbine.dds")
 
 
+def _sidebar_region():
+    """The 3D view sidebar region, or None."""
+    try:
+        for area in bpy.context.screen.areas:
+            if area.type != 'VIEW_3D':
+                continue
+            for region in area.regions:
+                if region.type == 'UI':
+                    return region
+    except Exception:
+        pass
+    return None
+
+
+def _keep_sidebar_tab():
+    """Keep the 3D view sidebar on the tab the user had before generating.
+
+    Blender switches the sidebar to another tab while it redraws the 3D view right
+    after generation finishes, so the tab the user was on is put back a moment
+    after that redraw.
+    """
+    region = _sidebar_region()
+    if region is None:
+        return
+    try:
+        wanted = region.active_panel_category
+    except Exception:
+        return
+    if not wanted:
+        return
+
+    state = {'n': 0}
+
+    # Timers do not run while the operator works, so this starts right after
+    # generation finishes and watches over the redraw that follows it.
+    def restore():
+        state['n'] += 1
+        try:
+            r = _sidebar_region()
+            if r is not None and r.active_panel_category != wanted:
+                r.active_panel_category = wanted
+                for area in bpy.context.screen.areas:
+                    if area.type == 'VIEW_3D':
+                        area.tag_redraw()
+        except Exception:
+            pass
+        return 0.2 if state['n'] < 10 else None
+
+    try:
+        bpy.app.timers.register(restore, first_interval=0.1)
+    except Exception:
+        pass
+
+
 def resolve_condor_paths(props):
     """Resolve Condor folder paths from properties. Returns dict or None."""
     condor_path = bpy.path.abspath(props.condor_path)
@@ -352,6 +406,7 @@ class CONDOR_OT_import_buildings(Operator):
             return {'CANCELLED'}
 
         props = context.scene.condor_buildings
+        _keep_sidebar_tab()
 
         # Get Condor paths
         paths = self.get_condor_paths(context)
@@ -491,6 +546,12 @@ class CONDOR_OT_import_buildings(Operator):
                                     uv_layer[loop_idx].uv = (u, v)
 
                     context.view_layer.active_layer_collection = prev_active_col
+
+                    # Smoothed twin (tessellation simulation) next to the original
+                    from .terrain_smooth import import_smooth_terrain, smooth_enabled
+                    if smooth_enabled():
+                        import_smooth_terrain(context, terrain_obj_path, patch_id,
+                                              terrain_obj_name, paths)
         # --- END SINGLE PATCH TERRAIN IMPORT ---
 
         # Process patches
@@ -603,6 +664,13 @@ class CONDOR_OT_import_buildings(Operator):
                                             uv_layer[loop_idx].uv = (u, v)
 
                             context.view_layer.active_layer_collection = prev_active_col
+
+                            # Smoothed twin (tessellation simulation)
+                            from .terrain_smooth import (import_smooth_terrain,
+                                                         smooth_enabled)
+                            if smooth_enabled():
+                                import_smooth_terrain(context, terrain_obj_path,
+                                                      patch_id, terrain_obj_name, paths)
                 # --- END TERRAIN IMPORT PER PATCH ---
 
                 # Find patch files
@@ -951,6 +1019,7 @@ class CONDOR_OT_import_buildings(Operator):
             props.is_processing = False
             props.current_patch = ""
 
+
         # Update statistics
         elapsed_ms = int((time.time() - start_time) * 1000)
         props.last_import_buildings = total_buildings
@@ -1001,11 +1070,14 @@ class CONDOR_OT_import_buildings(Operator):
                             for obj in col.objects:
                                 obj.location.x += offset_x
                                 obj.location.y += offset_y
-                        terrain_obj = bpy.data.objects.get(f"TR3{patch_id}")
-                        if terrain_obj:
-                            terrain_obj.location.x += offset_x
-                            terrain_obj.location.y += offset_y
+                        # the smoothed twin moves with the terrain it belongs to
+                        for t_name in (f"TR3{patch_id}", f"TR3{patch_id}_smooth"):
+                            terrain_obj = bpy.data.objects.get(t_name)
+                            if terrain_obj:
+                                terrain_obj.location.x += offset_x
+                                terrain_obj.location.y += offset_y
             # --- END POSITION PATCHES ---
+
 
             # --- SET VIEWPORT ---
             import math as _math
@@ -1037,6 +1109,7 @@ class CONDOR_OT_import_buildings(Operator):
                                     space.lock_object = None
                         break
             # --- END SET VIEWPORT ---
+
 
             return {'FINISHED'}
         else:
@@ -1316,13 +1389,18 @@ class CONDOR_OT_export_terrain(Operator):
         target_filename = f"h{patch_id}.obj"
         path_out = os.path.join(modified_dir, target_filename)
 
+        # The terrain is saved the way it came: the standard 30 m terrain has quads,
+        # so it is written back with quads. The detailed 22.5 m terrain (tr3f) IS
+        # triangulated, so that one is written back triangulated.
+        triangulate = bool(props.patch_tref)
+
         if bpy.app.version >= (4, 0, 0):
             bpy.ops.wm.obj_export(
                 filepath=path_out,
                 export_selected_objects=True,
                 forward_axis='Y',
                 up_axis='Z',
-                export_triangulated_mesh=True,
+                export_triangulated_mesh=triangulate,
                 export_normals=True,
                 export_uv=True,
                 export_materials=True,
@@ -1334,7 +1412,7 @@ class CONDOR_OT_export_terrain(Operator):
                 use_selection=True,
                 axis_forward='Y',
                 axis_up='Z',
-                use_triangles=True,
+                use_triangles=triangulate,
                 use_normals=True,
                 use_uvs=True,
                 use_materials=True,
@@ -1369,7 +1447,9 @@ class CONDOR_OT_clear_terrain(Operator):
         patch_ids = resolve_patch_list(props)
         removed = 0
         for patch_id in patch_ids:
-            for name in (f"TR3{patch_id}", f"TR3f{patch_id}"):
+            # the smoothed twins (Patch_Terrain_Smooth) go with them
+            for name in (f"TR3{patch_id}", f"TR3f{patch_id}",
+                         f"TR3{patch_id}_smooth", f"TR3f{patch_id}_smooth"):
                 ob = bpy.data.objects.get(name)
                 if ob is not None:
                     bpy.data.objects.remove(ob, do_unlink=True)
@@ -1605,10 +1685,8 @@ class CONDOR_OT_import_chimneys(Operator):
                 self.report({'WARNING'}, f"Patch {patch_id}: heightmap .txt not found, skipping")
                 continue
 
-            terrain_obj_file = os.path.join(paths['heightmaps'], f"h{patch_id}.obj")
-            modified_file = os.path.join(paths['heightmaps'], "modified", f"h{patch_id}.obj")
-            if os.path.exists(modified_file):
-                terrain_obj_file = modified_file
+            from .terrain_smooth import resolve_smooth_or_source, scene_terrain_object
+            terrain_obj_file = resolve_smooth_or_source(paths['heightmaps'], patch_id)
             if not os.path.exists(terrain_obj_file):
                 self.report({'WARNING'}, f"Patch {patch_id}: terrain h{patch_id}.obj not found, skipping")
                 continue
@@ -1623,7 +1701,7 @@ class CONDOR_OT_import_chimneys(Operator):
             except Exception:
                 continue
 
-            terrain_obj = bpy.data.objects.get(f"TR3{patch_id}")
+            terrain_obj = scene_terrain_object(patch_id)
 
             px = int(patch_id[:3])
             py = int(patch_id[3:])
@@ -1641,10 +1719,10 @@ class CONDOR_OT_import_chimneys(Operator):
                 bpy.context.view_layer.update()
 
             if not props.import_patch_terrain:
-                from ..io.terrain_loader import load_terrain
+                from .terrain_smooth import load_terrain_smoothed
                 from ..models.geometry import Point2D
                 try:
-                    terrain_mesh = load_terrain(terrain_obj_file)
+                    terrain_mesh = load_terrain_smoothed(paths['heightmaps'], patch_id)
                 except Exception:
                     terrain_mesh = None
             else:
@@ -1757,9 +1835,9 @@ class CONDOR_OT_import_chimneys(Operator):
                         except Exception:
                             # terrain HIDDEN -> no evaluated mesh; fall back to file
                             if terrain_mesh is None:
-                                from ..io.terrain_loader import load_terrain
+                                from .terrain_smooth import load_terrain_smoothed
                                 try:
-                                    terrain_mesh = load_terrain(terrain_obj_file)
+                                    terrain_mesh = load_terrain_smoothed(paths['heightmaps'], patch_id)
                                 except Exception:
                                     terrain_mesh = None
                     if not got_foot and terrain_mesh:
@@ -2096,6 +2174,12 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
                                 uv_layer[loop_idx].uv = (u, v)
 
                 context.view_layer.active_layer_collection = prev_active_col
+
+                # Smoothed twin (tessellation simulation) next to the original
+                from .terrain_smooth import import_smooth_terrain, smooth_enabled
+                if smooth_enabled():
+                    import_smooth_terrain(context, terrain_obj_path, patch_id,
+                                          terrain_obj_name, paths)
             else:
                 self.report({'WARNING'}, f"Terrain file not found for patch {patch_id}, skipping terrain import.")
         # --- END TERRAIN IMPORT ---
@@ -2427,6 +2511,13 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
                                         uv_layer[loop_idx].uv = (u, v)
 
                         context.view_layer.active_layer_collection = prev_active_col
+
+                        # Smoothed twin (tessellation simulation)
+                        from .terrain_smooth import (import_smooth_terrain,
+                                                     smooth_enabled)
+                        if smooth_enabled():
+                            import_smooth_terrain(context, terrain_obj_path,
+                                                  patch_id, terrain_obj_name, paths)
             # --- END TERRAIN IMPORT ---
 
             # --- OBJ IMPORT ---
@@ -2544,10 +2635,12 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
                             for obj in col.objects:
                                 obj.location.x += offset_x
                                 obj.location.y += offset_y
-                    terrain_obj = bpy.data.objects.get(f"TR3{pid}")
-                    if terrain_obj:
-                        terrain_obj.location.x += offset_x
-                        terrain_obj.location.y += offset_y
+                    # the smoothed twin moves with the terrain it belongs to
+                    for t_name in (f"TR3{pid}", f"TR3{pid}_smooth"):
+                        terrain_obj = bpy.data.objects.get(t_name)
+                        if terrain_obj:
+                            terrain_obj.location.x += offset_x
+                            terrain_obj.location.y += offset_y
         # --- END PATCH POSITIONING ---
 
         # --- VIEWPORT ---

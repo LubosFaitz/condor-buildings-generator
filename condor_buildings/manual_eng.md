@@ -4,6 +4,53 @@ Plugin for Blender that generates 3D buildings for the Condor flight simulator. 
 
 ---
 
+## Add-on Preferences (terrain smoothing)
+
+This one setting is not in the sidebar but in **Edit > Preferences > Add-ons > Condor Buildings Generator** — expand the add-on and right below the `File:` line there is a checkbox:
+
+**Enable Laplacian Smooth Modifier for Terrain (Tessellation Simulation)**
+
+**It is OFF by default.** Until you switch it on, the plugin behaves exactly as before — nothing is computed and nothing is written.
+
+### What it is for
+
+Condor tessellates the terrain when it loads a landscape, so the surface you actually fly over is smoother than the `h<patch>.obj` file the plugin places objects on. On broken ground it shows: an object sits exactly on the raw mesh, but in Condor it cuts into the hillside or hangs above it.
+
+With the checkbox on, the terrain is smoothed exactly the way Blender's **Smooth (Laplacian)** modifier does it, and **all autogen sits on that smoothed surface** — buildings, power lines, aerialways, bridges, wind turbines, solar farms, substations, chimneys and transmitters. This holds in Blender, in file mode and in batch processing alike.
+
+### What you can set
+
+Below the checkbox are the same values in the same order as in the modifier itself (they become available once smoothing is on):
+
+| value | default | what it does |
+|---|---|---|
+| **Repeat** | 2 | how many times the smoothing is repeated — more means a smoother terrain |
+| **Lambda Factor** | 4.0 | how strong the smoothing is |
+| **Lambda Border** | 0.0 | smoothing of the patch edges; zero keeps them in place, so no gap appears towards the neighbouring patch |
+| **Axis X / Y / Z** | **Z** only | which axes may move. Only Z (heights) is on — X and Y are off so the terrain never shifts sideways |
+| **Preserve Volume** | on | keeps the volume, so smoothing does not shrink the terrain |
+| **Normalized** | on | normalized weights |
+
+Being add-on preferences and not scene settings, Blender remembers them by itself — they apply to every scene and survive a restart.
+
+### Where it is stored
+
+**The terrain file is never written to** — the plugin only reads it, and that includes a hand-edited terrain in `modified`. Only the computed **heights** are stored, in a text file `Working/Heightmaps/smooth/h<patch>.txt` (for tr3f in `22.5m/smooth/`), one value per line. That is about 290 kB per patch, six times less than the terrain itself — the mesh, the faces and the X/Y coordinates are never copied, they always come from the original.
+
+The source for smoothing is the one the plugin uses everywhere else: **if a terrain is in `modified`, that one is smoothed**, otherwise the original.
+
+### Computed only once
+
+Smoothing a patch takes a moment (Blender is busy while it runs), so the result is stored and reused next time. It recomputes by itself when you change any of those settings, when you edit and save the terrain again, or when you swap the source — add or delete a file in `modified`. The plugin notes in that file what it was computed from and with which settings.
+
+If smoothing fails for any reason, generation does not stop — a warning goes to the console and the original terrain is used.
+
+### What you see in the scene
+
+When terrain import into Blender is on, a smoothed copy of the terrain appears **in addition**, in a new collection **Patch_Terrain_Smooth**, as an object with a `_smooth` suffix (e.g. `TR3036019_smooth`). It is created as a copy of the original terrain with the heights replaced — so it has the **same mesh and the same material** as the original and you can compare the two surfaces by toggling visibility. The original terrain in `Patch_Terrain` is left untouched, and the trash button removes both.
+
+---
+
 ## Panel: Condor Settings
 
 ### Condor Directory
@@ -117,7 +164,9 @@ Exports the terrain object from the scene back to an OBJ file.
 - If not found → error, nothing is exported
 - Exports to `Working/Heightmaps/22.5m/modified/h{patch_id}.obj`
 
-The `modified` folder is created automatically if it does not exist. The export uses axes `forward=Y, up=Z`, exports a triangulated mesh, normals, UV maps, and materials. On the next import the plugin always prefers the file from `modified` over the original.
+The `modified` folder is created automatically if it does not exist. The export uses axes `forward=Y, up=Z`, exports normals, UV maps, and materials. On the next import the plugin always prefers the file from `modified` over the original.
+
+**The terrain is saved the way it came:** normally (tr3f unchecked) the **quads** are kept, just as the original Condor terrain has them. Only with **tr3f** checked is it saved triangulated, because that detailed 22.5 m terrain really is triangulated.
 
 **Trash button (next to Export Terrain):** removes this patch's terrain **object** from the scene (`TR3{patch_id}` in the `Patch_Terrain` collection). It does not delete the file on disk. Works in Single Patch and Range (range removes the terrain objects of the whole range).
 

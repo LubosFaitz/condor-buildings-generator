@@ -722,9 +722,8 @@ def build_chimney_meshdata(props, paths, patch_id, low=False):
     if not txt_path:
         return None
 
-    terrain_file = os.path.join(paths['heightmaps'], "modified", f"h{patch_id}.obj")
-    if not os.path.exists(terrain_file):
-        terrain_file = os.path.join(paths['heightmaps'], f"h{patch_id}.obj")
+    from .terrain_smooth import load_terrain_smoothed, resolve_smooth_or_source
+    terrain_file = resolve_smooth_or_source(paths['heightmaps'], patch_id)
     if not os.path.exists(terrain_file):
         return None
 
@@ -732,7 +731,7 @@ def build_chimney_meshdata(props, paths, patch_id, low=False):
         metadata = load_patch_metadata(txt_path)
         projector = TransverseMercatorProjector(
             metadata.zone_number, metadata.translate_x, metadata.translate_y)
-        terrain_mesh = load_terrain(terrain_file)
+        terrain_mesh = load_terrain_smoothed(paths['heightmaps'], patch_id)
         root = ET.parse(osm_path).getroot()
     except Exception as e:
         logger.warning("chimney: setup failed for %s: %s", patch_id, e)

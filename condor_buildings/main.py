@@ -521,13 +521,18 @@ def run_pipeline(
     )
 
     # Step 3: Load terrain mesh
+    # A hand-edited terrain in Heightmaps/modified takes precedence over the
+    # original one, so buildings sit on the same surface the Landscape Editor
+    # (and the terrain imported into Blender) uses. Same order as bridges.py
+    # and batch_processing.py. With terrain smoothing enabled, the smoothed
+    # copy of that file is used instead.
     logger.info("Loading terrain mesh")
     try:
-        terrain_path = os.path.join(
-            config.patch_dir,
-            f"h{config.patch_id}.obj"
-        )
-        terrain = load_terrain(terrain_path)
+        from .blender.terrain_smooth import (load_terrain_smoothed,
+                                             resolve_smooth_or_source)
+        terrain_path = resolve_smooth_or_source(config.patch_dir, config.patch_id)
+        logger.info(f"Terrain source: {terrain_path}")
+        terrain = load_terrain_smoothed(config.patch_dir, config.patch_id)
         stats.terrain_triangles = len(terrain.triangles)
         logger.info(f"Loaded terrain with {stats.terrain_triangles} triangles")
     except Exception as e:

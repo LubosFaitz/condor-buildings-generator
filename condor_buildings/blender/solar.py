@@ -902,13 +902,12 @@ def _make_object(name, verts, faces, face_uvs, tex_path):
 def _load_terrain_z(paths, patch_id):
     """z_at closure for a patch (modified terrain preferred), or None."""
     from ..io.terrain_loader import load_terrain
-    terr = os.path.join(paths['heightmaps'], "modified", f"h{patch_id}.obj")
-    if not os.path.exists(terr):
-        terr = os.path.join(paths['heightmaps'], f"h{patch_id}.obj")
+    from .terrain_smooth import load_terrain_smoothed, resolve_smooth_or_source
+    terr = resolve_smooth_or_source(paths['heightmaps'], patch_id)
     if not os.path.exists(terr):
         return None
     try:
-        return _terrain_z_closure(load_terrain(terr))
+        return _terrain_z_closure(load_terrain_smoothed(paths['heightmaps'], patch_id))
     except Exception as e:
         logger.warning("solar: terrain load failed for %s: %s", patch_id, e)
         return None
