@@ -15,9 +15,8 @@ build/
 test_data/
 output/
 
-# Datos de validación de Andy (parches reales, grandes) y atlas de texturas
+# Datos de validación de Andy (parches reales, grandes)
 Andy-files/
-textures/
 
 # Backups y versiones previas
 backup_releases/
