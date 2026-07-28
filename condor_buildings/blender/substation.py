@@ -128,7 +128,8 @@ def build_for_patch(patch_id, osm_path, paths, collection_name):
     if not rings:
         return 0
 
-    terrain = load_terrain(os.path.join(paths['heightmaps'], f"h{patch_id}.obj"))
+    from .terrain_smooth import load_terrain_smoothed
+    terrain = load_terrain_smoothed(paths['heightmaps'], patch_id)
     verts, faces = _outline_mesh(rings, terrain)
     if not verts:
         return 0

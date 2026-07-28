@@ -177,15 +177,14 @@ def _transmitter_setup(props, paths, patch_id):
             txt_path = cand; break
     if not txt_path:
         return None
-    terrain_file = os.path.join(paths['heightmaps'], "modified", f"h{patch_id}.obj")
-    if not os.path.exists(terrain_file):
-        terrain_file = os.path.join(paths['heightmaps'], f"h{patch_id}.obj")
+    from .terrain_smooth import load_terrain_smoothed, resolve_smooth_or_source
+    terrain_file = resolve_smooth_or_source(paths['heightmaps'], patch_id)
     if not os.path.exists(terrain_file):
         return None
     try:
         meta = load_patch_metadata(txt_path)
         projector = TransverseMercatorProjector(meta.zone_number, meta.translate_x, meta.translate_y)
-        terrain = load_terrain(terrain_file)
+        terrain = load_terrain_smoothed(paths['heightmaps'], patch_id)
         root = ET.parse(osm_path).getroot()
     except Exception as e:
         logger.warning("transmitter: setup failed for %s: %s", patch_id, e)
@@ -416,9 +415,8 @@ class CONDOR_OT_import_transmitters(Operator):
                 os.path.join(paths['heightmaps'], f"H{patch_id}.txt")) if os.path.exists(p)), None)
             if not txt_path:
                 continue
-            terrain_file = os.path.join(paths['heightmaps'], "modified", f"h{patch_id}.obj")
-            if not os.path.exists(terrain_file):
-                terrain_file = os.path.join(paths['heightmaps'], f"h{patch_id}.obj")
+            from .terrain_smooth import resolve_smooth_or_source
+            terrain_file = resolve_smooth_or_source(paths['heightmaps'], patch_id)
             if not os.path.exists(terrain_file):
                 continue
             try:
@@ -463,7 +461,8 @@ class CONDOR_OT_import_transmitters(Operator):
                     try: _shutil.copy2(s, d)
                     except Exception: pass
 
-            terrain_obj = bpy.data.objects.get(f"TR3{patch_id}")
+            from .terrain_smooth import scene_terrain_object
+            terrain_obj = scene_terrain_object(patch_id)
             px, py = int(patch_id[:3]), int(patch_id[3:])
             if not props.single_patch_mode:
                 off_x = -(px - props.patch_x_min) * 5760.0
@@ -479,8 +478,8 @@ class CONDOR_OT_import_transmitters(Operator):
 
             terrain_mesh = None
             if not (props.import_patch_terrain and terrain_obj):
-                from ..io.terrain_loader import load_terrain
-                try: terrain_mesh = load_terrain(terrain_file)
+                from .terrain_smooth import load_terrain_smoothed
+                try: terrain_mesh = load_terrain_smoothed(paths['heightmaps'], patch_id)
                 except Exception: terrain_mesh = None
 
             placed = []
@@ -519,8 +518,8 @@ class CONDOR_OT_import_transmitters(Operator):
                     except Exception:
                         # terrain HIDDEN -> no evaluated mesh; fall back to file
                         if terrain_mesh is None:
-                            from ..io.terrain_loader import load_terrain
-                            try: terrain_mesh = load_terrain(terrain_file)
+                            from .terrain_smooth import load_terrain_smoothed
+                            try: terrain_mesh = load_terrain_smoothed(paths['heightmaps'], patch_id)
                             except Exception: terrain_mesh = None
                 if not got_foot and terrain_mesh:
                     from ..models.geometry import Point2D, BBox

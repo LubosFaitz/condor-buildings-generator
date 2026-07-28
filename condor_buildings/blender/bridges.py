@@ -1132,15 +1132,15 @@ def _cross_patch_samplers(patch_id, heightmaps_dir, texture_dirs, cur_z, cur_wat
 
     def get_z(pid):
         if pid not in zcache:
+            from .terrain_smooth import (load_terrain_smoothed,
+                                         resolve_smooth_or_source)
             z = None
-            for cand in (os.path.join(heightmaps_dir, "modified", f"h{pid}.obj"),
-                         os.path.join(heightmaps_dir, f"h{pid}.obj")):
-                if os.path.exists(cand):
-                    try:
-                        z = _make_terrain_z(load_terrain(cand))
-                    except Exception:
-                        z = None
-                    break
+            cand = resolve_smooth_or_source(heightmaps_dir, pid)
+            if os.path.exists(cand):
+                try:
+                    z = _make_terrain_z(load_terrain_smoothed(heightmaps_dir, pid))
+                except Exception:
+                    z = None
             zcache[pid] = z
         return zcache[pid]
 
@@ -1222,15 +1222,15 @@ class CONDOR_OT_import_bridges(Operator):
                 os.path.join(paths['heightmaps'], f"H{patch_id}.txt")) if os.path.exists(p)), None)
             if not txt_path:
                 continue
-            terrain_file = os.path.join(paths['heightmaps'], "modified", f"h{patch_id}.obj")
-            if not os.path.exists(terrain_file):
-                terrain_file = os.path.join(paths['heightmaps'], f"h{patch_id}.obj")
+            from .terrain_smooth import (load_terrain_smoothed,
+                                         resolve_smooth_or_source)
+            terrain_file = resolve_smooth_or_source(paths['heightmaps'], patch_id)
             if not os.path.exists(terrain_file):
                 continue
             try:
                 meta = load_patch_metadata(txt_path)
                 projector = TransverseMercatorProjector(meta.zone_number, meta.translate_x, meta.translate_y)
-                terrain = load_terrain(terrain_file)
+                terrain = load_terrain_smoothed(paths['heightmaps'], patch_id)
                 root = ET.parse(osm_path).getroot()
             except Exception as e:
                 logger.warning("bridges: setup failed for %s: %s", patch_id, e)
@@ -1378,15 +1378,14 @@ def _patch_setup(paths, patch_id):
         os.path.join(paths['heightmaps'], f"H{patch_id}.txt")) if os.path.exists(p)), None)
     if not txt_path:
         return None
-    terrain_file = os.path.join(paths['heightmaps'], "modified", f"h{patch_id}.obj")
-    if not os.path.exists(terrain_file):
-        terrain_file = os.path.join(paths['heightmaps'], f"h{patch_id}.obj")
+    from .terrain_smooth import load_terrain_smoothed, resolve_smooth_or_source
+    terrain_file = resolve_smooth_or_source(paths['heightmaps'], patch_id)
     if not os.path.exists(terrain_file):
         return None
     try:
         meta = load_patch_metadata(txt_path)
         projector = TransverseMercatorProjector(meta.zone_number, meta.translate_x, meta.translate_y)
-        terrain = load_terrain(terrain_file)
+        terrain = load_terrain_smoothed(paths['heightmaps'], patch_id)
         root = ET.parse(osm_path).getroot()
     except Exception as e:
         logger.warning("bridges: file-mode setup failed for %s: %s", patch_id, e)

@@ -55,9 +55,10 @@ class NeighborTerrain:
             import os
             from ..io.patch_metadata import load_patch_metadata
             from ..io.terrain_loader import load_terrain
+            from ..blender.terrain_smooth import load_terrain_smoothed
             try:
                 meta = load_patch_metadata(os.path.join(self.dir, f"h{pid}.txt"))
-                terr = load_terrain(os.path.join(self.dir, f"h{pid}.obj"))
+                terr = load_terrain_smoothed(self.dir, pid)
                 self._cache[pid] = (terr, meta.translate_x, meta.translate_y)
             except Exception as e:
                 logger.warning("Aerialway: neighbour patch %s terrain unavailable: %s", pid, e)
