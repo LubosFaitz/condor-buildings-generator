@@ -348,6 +348,17 @@ class CondorBuildingsProperties(PropertyGroup):
         default=False,
     )
 
+    exclude_airports_solar: BoolProperty(
+        name="Exclude airports and solar farms",
+        description=(
+            "Generate no objects inside an airfield (aeroway=aerodrome) or a ground solar "
+            "farm - those places already have their own Condor scenery objects / panels. "
+            "Power lines are kept, they may cross the area. Needs a freshly downloaded "
+            "map_*.osm (older files do not contain the solar farm outlines)"
+        ),
+        default=False,
+    )
+
     # --- House-Scale Constraints (Advanced) ---
 
     house_max_area: FloatProperty(

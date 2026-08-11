@@ -491,6 +491,14 @@ class PipelineConfig:
     # line), merged into the same 'pylones' object. Needs generate_powerlines.
     generate_warning_balls: bool = False
 
+    # Keep auto-generated objects OUT of airfields and ground solar farms (opt-in).
+    # Condor sceneries usually already have hand-made objects at an airfield, and a
+    # solar farm is built by the solar tool, so anything generated there only has to
+    # be deleted again by hand. When True the pipeline reads the aerodrome / solar
+    # outlines from the SAME OSM file and skips every object whose position falls
+    # inside one. Power lines are NEVER skipped - they must cross the area.
+    exclude_airports_solar: bool = False
+
     def __post_init__(self):
         """Validate configuration values."""
         # The terrain orthophoto needs the single merged flat_roof object with global

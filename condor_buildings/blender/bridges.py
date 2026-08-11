@@ -49,7 +49,12 @@ VALLEY_MIN_CLEARANCE = 3.0    # terrain must drop at least this far below the de
 # mistaken for a valley - only a genuinely wide gap (valley / river) qualifies.
 VALLEY_MIN_WIDTH = 25.0
 PILLAR_MIN_BRIDGE = 20.0      # bridges shorter than this get NO pillar
-PILLAR_TARGET_SPACING = 30.0  # else ~1 pillar per this many metres, spaced evenly
+PILLAR_TARGET_SPACING = 50.0  # else ~1 pillar per this many metres, spaced evenly
+PILLAR_CLEARANCE = 4.0        # protective zone kept free around a pillar (m)
+PILLAR_MAX_SHIFT_FRAC = 0.4   # a blocked pillar may slide this much of the spacing along
+                              # the deck to find a free spot (0.4 of 50 m = +/-20 m)
+PILLAR_SHIFT_STEP = 2.0       # step of that search (m)
+OBSTACLE_CELL = 5.0           # cell size of the obstacle grid (m)
 PILLAR_HALF = 0.9            # square pillar half-size (m)
 PILLAR_MIN_DROP = 1.5        # minimum deck-to-terrain drop to place a pillar (m)
 PILLAR_EMBED = 2.0          # pillar reaches this far BELOW the terrain (anchored, not floating)
@@ -840,8 +845,163 @@ def _cap_rail_width(specs):
     return out
 
 
+# ---------------------------------------------------------------------------
+# Obstacles: what the PLUGIN itself has already generated in this patch
+# ---------------------------------------------------------------------------
+# A pillar must not be built where the plugin already put something else - a house, a
+# pylon, a wind turbine, solar panels, another bridge. The test covers the pillar's whole
+# VOLUME (from under the terrain up to the deck soffit) plus PILLAR_CLEARANCE around it,
+# so an object hanging ABOVE the pillar's base counts as a collision too.
+#
+# Obstacles are stored as face bounding boxes in a coarse (x, y) grid, so one pillar only
+# ever tests the handful of faces standing near it, not the whole patch.
+
+class _Obstacles:
+    """Grid of face bounding boxes of the already generated geometry.
+
+    ``mask`` (a set of cells near the bridges) keeps the index small: a patch OBJ holds
+    hundreds of thousands of faces, but only the handful standing where a pillar could
+    ever go is worth remembering. ``scanned`` counts everything seen, mask or not, so the
+    caller can still tell an EMPTY patch from one that simply has nothing near a bridge.
+    """
+
+    def __init__(self, cell=OBSTACLE_CELL, mask=None):
+        self.cell = cell
+        self.mask = mask
+        self.grid = {}
+        self.n = 0
+        self.scanned = 0
+
+    def _cells(self, x0, x1, y0, y1):
+        c = self.cell
+        for ix in range(int(math.floor(x0 / c)), int(math.floor(x1 / c)) + 1):
+            for iy in range(int(math.floor(y0 / c)), int(math.floor(y1 / c)) + 1):
+                yield (ix, iy)
+
+    def add_face(self, pts):
+        self.scanned += 1
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        zs = [p[2] for p in pts]
+        box = (min(xs), max(xs), min(ys), max(ys), min(zs), max(zs))
+        if (box[1] - box[0]) > 400.0 or (box[3] - box[2]) > 400.0:
+            return                       # absurd face - would smear over the whole grid
+        keys = [k for k in self._cells(box[0], box[1], box[2], box[3])
+                if self.mask is None or k in self.mask]
+        if not keys:
+            return                       # nowhere near a bridge -> not worth indexing
+        for key in keys:
+            self.grid.setdefault(key, []).append(box)
+        self.n += 1
+
+    def hits(self, x0, x1, y0, y1, z0, z1):
+        for key in self._cells(x0, x1, y0, y1):
+            for b in self.grid.get(key, ()):
+                if (b[0] <= x1 and b[1] >= x0 and b[2] <= y1 and b[3] >= y0
+                        and b[4] <= z1 and b[5] >= z0):
+                    return True
+        return False
+
+
+def _skip_as_obstacle(name):
+    """The terrain is imported, not generated, so it is never an obstacle. Bridges are
+    skipped too: on a re-run the OBJ / scene may still hold the PREVIOUS 'bridges' object,
+    and a pillar would then collide with its own older copy and never be built."""
+    n = (name or "").lower()
+    return "terrain" in n or n.startswith(OBJECT_NAME)
+
+
+def _obstacle_mask(bridges, pad=150.0, cell=OBSTACLE_CELL):
+    """Cells worth indexing: only the surroundings of the bridges. The pad covers the deck
+    reaching past the OSM way to the far bank (_span_water)."""
+    mask = set()
+    for b in bridges:
+        pts = [(x, y) for (x, y, _ip) in b.get("points", ())]
+        if len(pts) < 2:
+            continue
+        x0 = min(p[0] for p in pts) - pad
+        x1 = max(p[0] for p in pts) + pad
+        y0 = min(p[1] for p in pts) - pad
+        y1 = max(p[1] for p in pts) + pad
+        for ix in range(int(math.floor(x0 / cell)), int(math.floor(x1 / cell)) + 1):
+            for iy in range(int(math.floor(y0 / cell)), int(math.floor(y1 / cell)) + 1):
+                mask.add((ix, iy))
+    return mask
+
+
+def _obstacles_from_obj(obj_path, mask=None):
+    """File mode: face boxes of everything already written into the patch OBJ (buildings,
+    pylons, turbines, solar farms, ...). The OBJ is in Condor axes - (x,y,z) -> (y,-x,z) -
+    so the inverse is applied to get patch coordinates back."""
+    from ..config import CONDOR_AXIS_SWAP
+    obs = _Obstacles(mask=mask)
+    if not obj_path or not os.path.exists(obj_path):
+        return obs
+    try:
+        verts = []
+        skip = False
+        with open(obj_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("v "):
+                    p = line.split()
+                    x, y, z = float(p[1]), float(p[2]), float(p[3])
+                    verts.append((-y, x, z) if CONDOR_AXIS_SWAP else (x, y, z))
+                elif line.startswith("o "):
+                    skip = _skip_as_obstacle(line[2:].strip())
+                elif line.startswith("f ") and not skip:
+                    pts = []
+                    for tok in line.split()[1:]:
+                        vi = tok.split("/")[0]
+                        if not vi:
+                            continue
+                        i = int(vi)
+                        i = i - 1 if i > 0 else len(verts) + i
+                        if 0 <= i < len(verts):
+                            pts.append(verts[i])
+                    if len(pts) >= 3:
+                        obs.add_face(pts)
+    except Exception as e:
+        print(f"[bridges] obstacle scan failed ({obj_path}): {e}")
+    return obs
+
+
+def _obstacles_from_collection(col, ox=0.0, oy=0.0, mask=None):
+    """Blender mode: face boxes of the plugin's objects in this patch collection. (ox, oy)
+    is the collection's patch offset, taken back out so everything is in patch coords."""
+    obs = _Obstacles(mask=mask)
+    if col is None:
+        return obs
+    for ob in col.all_objects:
+        if ob.type != 'MESH' or _skip_as_obstacle(ob.name) or ob.data is None:
+            continue
+        try:
+            mw = ob.matrix_world
+            co = [mw @ v.co for v in ob.data.vertices]
+            for poly in ob.data.polygons:
+                pts = [(co[i].x - ox, co[i].y - oy, co[i].z) for i in poly.vertices]
+                if len(pts) >= 3:
+                    obs.add_face(pts)
+        except Exception as e:
+            print(f"[bridges] obstacle scan failed ({ob.name}): {e}")
+    return obs
+
+
+def _hits_other_decks(specs, cur, x0, x1, y0, y1, z0, z1):
+    """The other bridges of THIS run - they are not in the OBJ / scene yet, so their deck
+    volumes are tested separately. The bridge's own deck is skipped (the pillar carries
+    it, it reaches up to its soffit by definition)."""
+    for other in specs:
+        if other is cur:
+            continue
+        for b in other.get("boxes", ()):
+            if (b[0] <= x1 and b[1] >= x0 and b[2] <= y1 and b[3] >= y0
+                    and b[4] <= z1 and b[5] >= z0):
+                return True
+    return False
+
+
 def _build_bridges(bridges, waterways, z_at, is_water=None, railings=True,
-                   g_moto=None, g_other=None):
+                   g_moto=None, g_other=None, obstacles=None):
     """Build merged (verts, faces). verts = [(x,y,z)], faces = [(i,j,k,l)/(i,j,k)]
     with 0-based indices. Returns (verts, faces, n_bridges, n_pillars).
     railings=False drops the zabradli (used for the lighter LOD1).
@@ -860,7 +1020,7 @@ def _build_bridges(bridges, waterways, z_at, is_water=None, railings=True,
         uvs.append(uv)
         return len(verts) - 1
 
-    n_bridges = n_pillars = n_skipped = 0
+    n_bridges = n_pillars = n_skipped = n_pil_blocked = 0
     specs = []
     for b in bridges:
         pts = b["points"]
@@ -911,7 +1071,9 @@ def _build_bridges(bridges, waterways, z_at, is_water=None, railings=True,
     # two same-type decks that CROSS (diverging ramps 'V') -> keep only the longer one
     specs = _drop_crossing_decks(specs)
 
-    # Pass 2: build the deck geometry for each (aligned) span.
+    # Pass 2a: work out the arched deck profile and the final width of EVERY span first.
+    # The pillars in pass 2b test against the other bridges' decks, so all of them have to
+    # be known before the first pillar is placed. No geometry is built here yet.
     for spec in specs:
         xy = spec["xy"]
         cum, z_deck = _deck_line(xy, z_at)
@@ -959,10 +1121,32 @@ def _build_bridges(bridges, waterways, z_at, is_water=None, railings=True,
             n_cw = max(1, int(round(w / 11.0)))      # 11 m per carriageway: 25.6m -> 22m (2x)
             w = n_cw * 11.0                           # snap width to whole carriageways
             uL, uR = 0.0, float(n_cw)                 # REPEAT tiles N carriageways side by side
+        half = w / 2.0
+        spec.update({"total": total, "nseg": nseg, "rp": rp, "rxy": rxy, "rcum": rcum,
+                     "rz": rz, "bowed": bowed, "w": w, "half": half,
+                     "vb": (vb0, vb1), "u": (uL, uR)})
+
+        # Deck volume as a chain of boxes - this is what the OTHER bridges' pillars are
+        # tested against (these decks are built in this same run, so they are not in the
+        # patch OBJ / scene yet).
+        boxes = []
+        for k in range(len(rxy) - 1):
+            (bx0, by0), (bx1, by1) = rxy[k], rxy[k + 1]
+            boxes.append((min(bx0, bx1) - half, max(bx0, bx1) + half,
+                          min(by0, by1) - half, max(by0, by1) + half,
+                          min(rz[k], rz[k + 1]) - DECK_THICKNESS, max(rz[k], rz[k + 1])))
+        spec["boxes"] = boxes
+
+    # Pass 2b: build the deck geometry (and the pillars) for each span.
+    for spec in specs:
+        rp, rxy, rcum, rz = spec["rp"], spec["rxy"], spec["rcum"], spec["rz"]
+        total, nseg, bowed = spec["total"], spec["nseg"], spec["bowed"]
+        w, half = spec["w"], spec["half"]
+        vb0, vb1 = spec["vb"]
+        uL, uR = spec["u"]
         fu0, fu1 = U_FENCE                            # railing (zabradli) sits in the bottom strip
         fv0, fv1 = V_RAIL_BAND
 
-        half = w / 2.0
         # consistent cross direction (perp) per resampled point (no bow-tie twist)
         cols = []
         prev_perp = None
@@ -1042,38 +1226,81 @@ def _build_bridges(bridges, waterways, z_at, is_water=None, railings=True,
             n_pil = 2
         else:
             n_pil = max(1, round(total / PILLAR_TARGET_SPACING))
-        for pi in range(n_pil):
-            s = total * (pi + 1) / (n_pil + 1)
+        def pillar_at(s):
+            """The pillar standing at arc-length s as (corners, bot, top), or None when it
+            cannot stand there - too little drop, or the space is taken."""
             cx, cy, zt = _sample(rxy, rcum, rz, s)   # arched deck profile
             top = zt - DECK_THICKNESS
             bot = z_at(cx, cy) - PILLAR_EMBED   # go 2 m under the terrain (anchored)
-            if (top - bot) >= PILLAR_MIN_DROP:
-                # LOCAL bridge direction HERE (the bridge can curve) - take the
-                # tangent from a bit behind to a bit ahead, so the pier lines up
-                # with the deck at this point, not with the overall straight line
-                fx, fy, _f = _sample(rxy, rcum, rz, min(s + 2.0, total))
-                gx, gy, _g = _sample(rxy, rcum, rz, max(s - 2.0, 0.0))
-                ldx, ldy = fx - gx, fy - gy
-                ll = math.hypot(ldx, ldy) or 1.0
-                aax, aay = ldx / ll, ldy / ll      # along the bridge (local)
-                apx, apy = -aay, aax               # across the bridge (local)
-                hl = PILLAR_HALF                   # half-length ALONG the bridge
-                hw = max(PILLAR_HALF, half * 0.8)  # a pier spanning most of the width
-                c = [(cx - hl * aax - hw * apx, cy - hl * aay - hw * apy),
-                     (cx + hl * aax - hw * apx, cy + hl * aay - hw * apy),
-                     (cx + hl * aax + hw * apx, cy + hl * aay + hw * apy),
-                     (cx - hl * aax + hw * apx, cy - hl * aay + hw * apy)]
-                # pillars sample the same plain grey footpath patch - concrete-ish
-                bidx = [av((p[0], p[1], bot), SIDEWALK_UV) for p in c]
-                tidx = [av((p[0], p[1], top), SIDEWALK_UV) for p in c]
-                for k in range(4):
-                    kn = (k + 1) % 4
-                    faces.append((bidx[k], bidx[kn], tidx[kn], tidx[k]))
-                n_pillars += 1
+            if (top - bot) < PILLAR_MIN_DROP:
+                return None
+            # LOCAL bridge direction HERE (the bridge can curve) - take the
+            # tangent from a bit behind to a bit ahead, so the pier lines up
+            # with the deck at this point, not with the overall straight line
+            fx, fy, _f = _sample(rxy, rcum, rz, min(s + 2.0, total))
+            gx, gy, _g = _sample(rxy, rcum, rz, max(s - 2.0, 0.0))
+            ldx, ldy = fx - gx, fy - gy
+            ll = math.hypot(ldx, ldy) or 1.0
+            aax, aay = ldx / ll, ldy / ll      # along the bridge (local)
+            apx, apy = -aay, aax               # across the bridge (local)
+            hl = PILLAR_HALF                   # half-length ALONG the bridge
+            hw = max(PILLAR_HALF, half * 0.8)  # a pier spanning most of the width
+            c = [(cx - hl * aax - hw * apx, cy - hl * aay - hw * apy),
+                 (cx + hl * aax - hw * apx, cy + hl * aay - hw * apy),
+                 (cx + hl * aax + hw * apx, cy + hl * aay + hw * apy),
+                 (cx - hl * aax + hw * apx, cy - hl * aay + hw * apy)]
+            # Collision: the pillar's WHOLE volume (bot..top) plus PILLAR_CLEARANCE around
+            # it must be free of anything the plugin generated - a house, a pylon, a
+            # turbine, solar panels, another bridge.
+            qx0 = min(p[0] for p in c) - PILLAR_CLEARANCE
+            qx1 = max(p[0] for p in c) + PILLAR_CLEARANCE
+            qy0 = min(p[1] for p in c) - PILLAR_CLEARANCE
+            qy1 = max(p[1] for p in c) + PILLAR_CLEARANCE
+            if obstacles is not None and obstacles.hits(qx0, qx1, qy0, qy1, bot, top):
+                return None
+            if _hits_other_decks(specs, spec, qx0, qx1, qy0, qy1, bot, top):
+                return None
+            return c, bot, top
+
+        gap = total / (n_pil + 1) if n_pil else 0.0
+        max_shift = gap * PILLAR_MAX_SHIFT_FRAC
+        for pi in range(n_pil):
+            s0 = total * (pi + 1) / (n_pil + 1)
+            # The drop rule decides at the IDEAL spot, exactly as before - a pillar that
+            # would be too short there is simply not built and does not go looking.
+            cx0, cy0, zt0 = _sample(rxy, rcum, rz, s0)
+            if (zt0 - DECK_THICKNESS) - (z_at(cx0, cy0) - PILLAR_EMBED) < PILLAR_MIN_DROP:
+                continue
+            # Blocked at the ideal spot? Slide along the deck to the NEAREST free place -
+            # alternating forward/back - instead of dropping the pillar and leaving a big
+            # unsupported gap. The search stops at PILLAR_MAX_SHIFT_FRAC of the spacing so
+            # the pillars stay roughly evenly spread.
+            placed = None
+            off = 0.0
+            while True:
+                for s in ((s0,) if off == 0.0 else (s0 + off, s0 - off)):
+                    if 0.0 < s < total:
+                        placed = pillar_at(s)
+                        if placed is not None:
+                            break
+                if placed is not None or off >= max_shift:
+                    break
+                off = min(off + PILLAR_SHIFT_STEP, max_shift)
+            if placed is None:
+                n_pil_blocked += 1     # taken all the way along -> no pillar here
+                continue
+            c, bot, top = placed
+            # pillars sample the same plain grey footpath patch - concrete-ish
+            bidx = [av((p[0], p[1], bot), SIDEWALK_UV) for p in c]
+            tidx = [av((p[0], p[1], top), SIDEWALK_UV) for p in c]
+            for k in range(4):
+                kn = (k + 1) % 4
+                faces.append((bidx[k], bidx[kn], tidx[kn], tidx[k]))
+            n_pillars += 1
 
         n_bridges += 1
 
-    return verts, faces, uvs, n_bridges, n_pillars, n_skipped
+    return verts, faces, uvs, n_bridges, n_pillars, n_skipped, n_pil_blocked
 
 
 # ---------------------------------------------------------------------------
@@ -1209,9 +1436,10 @@ class CONDOR_OT_import_bridges(Operator):
                          for x in range(props.patch_x_min, props.patch_x_max + 1)
                          for y in range(props.patch_y_min, props.patch_y_max + 1)]
 
-        total_bridges = total_pillars = total_skipped = 0
+        total_bridges = total_pillars = total_skipped = total_blocked = 0
         total_found = total_waterways = total_existing = 0
         missing_osm = []
+        no_obstacles = []     # patches with nothing generated yet -> collision check blind
         for patch_id in patch_ids:
             osm_path = os.path.join(paths['autogen'], f"map_{patch_id}.osm")
             if not ensure_patch_osm(paths, patch_id, True):
@@ -1286,12 +1514,26 @@ class CONDOR_OT_import_bridges(Operator):
                                              for o in _pcol.all_objects):
                     total_existing += 1
                     continue
-                verts, faces, uvs, nb, npil, nsk = _build_bridges(
-                    bridges, waterways, z_at, is_water, railings, g_moto, g_other)
+                # Obstacles = what the plugin already generated in THIS patch collection.
+                # The patch offset is taken back out so it is all in patch coordinates.
+                px, py = int(patch_id[:3]), int(patch_id[3:])
+                if props.single_patch_mode:
+                    ox = oy = 0.0
+                else:
+                    ox = -(px - props.patch_x_min) * PATCH_SIZE
+                    oy = (py - props.patch_y_min) * PATCH_SIZE
+                obstacles = _obstacles_from_collection(
+                    _pcol, ox, oy, _obstacle_mask(bridges))
+                if obstacles.scanned == 0 and patch_id not in no_obstacles:
+                    no_obstacles.append(patch_id)
+                verts, faces, uvs, nb, npil, nsk, nblk = _build_bridges(
+                    bridges, waterways, z_at, is_water, railings, g_moto, g_other,
+                    obstacles)
                 if vi == 0:
                     total_skipped += nsk
                     total_bridges += nb
                     total_pillars += npil
+                    total_blocked += nblk
                 if not verts or nb == 0:
                     continue
 
@@ -1334,10 +1576,19 @@ class CONDOR_OT_import_bridges(Operator):
         msg = (f"Bridges: built {total_bridges} (pillars {total_pillars}), "
                f"skipped (not over valley/river) {total_skipped}, "
                f"bridges in OSM {total_found}, rivers {total_waterways}")
+        if total_blocked:
+            msg += f", pillars skipped (collision) {total_blocked}"
         if total_existing:
             msg += f", already imported {total_existing} (skipped)"
         if missing_osm:
             msg += f" | OSM missing (skipped): {', '.join(missing_osm)}"
+        # Nothing generated in a patch yet -> there was nothing to test the pillars
+        # against. Say so, otherwise it looks like the collision check passed.
+        if no_obstacles:
+            self.report({'WARNING'},
+                        "Pillar collision check INACTIVE for patch(es) "
+                        f"{', '.join(no_obstacles)} - no generated objects there yet. "
+                        "Generate the buildings first, then import the bridges.")
         self.report({'INFO'} if (total_bridges > 0 or total_existing) and not missing_osm
                     else {'WARNING'}, msg)
         return {'FINISHED'}
@@ -1417,15 +1668,19 @@ def _patch_setup(paths, patch_id):
     return setup
 
 
-def _generate_patch_geometry(paths, patch_id, railings=True):
+def _generate_patch_geometry(paths, patch_id, railings=True, obstacles=None):
     """Build (verts, faces, uvs) of the bridges for ONE patch/LOD in file mode, reusing
-    the cached per-patch setup, or None if there is nothing."""
+    the cached per-patch setup, or None if there is nothing. obstacles = the geometry
+    already written into the patch OBJ, so a pillar does not land on it."""
     setup = _patch_setup(paths, patch_id)
     if setup is None:
         return None
     bridges, waterways, g_moto, g_other, z_at, is_water = setup
-    verts, faces, uvs, nb, npil, nsk = _build_bridges(
-        bridges, waterways, z_at, is_water, railings, g_moto, g_other)
+    verts, faces, uvs, nb, npil, nsk, nblk = _build_bridges(
+        bridges, waterways, z_at, is_water, railings, g_moto, g_other, obstacles)
+    if nblk:
+        print(f"[bridges] patch {patch_id}: {nblk} pillar(s) skipped - collision with "
+              f"generated objects")
     if not verts or nb == 0:
         return None
     return verts, faces, uvs
@@ -1472,7 +1727,17 @@ def _write_bridge_into_obj(obj_path, paths, patch_id, railings):
     from ..config import CONDOR_AXIS_SWAP
     from ..io.obj_exporter import _condor_xform
 
-    geo = _generate_patch_geometry(paths, patch_id, railings)
+    # The bridges are appended LAST, so everything else the plugin generated for this
+    # patch is already in this OBJ - read it as the obstacles for the pillars. Only the
+    # surroundings of the bridges are indexed, the rest of the patch can hold no pillar.
+    _setup = _patch_setup(paths, patch_id)
+    if _setup is None:
+        return
+    obstacles = _obstacles_from_obj(obj_path, _obstacle_mask(_setup[0]))
+    if obstacles.scanned == 0:
+        print(f"[bridges] patch {patch_id}: nothing generated in {os.path.basename(obj_path)} "
+              f"- pillar collision check INACTIVE")
+    geo = _generate_patch_geometry(paths, patch_id, railings, obstacles)
     if geo is None:
         return
     verts, faces, uvs = geo

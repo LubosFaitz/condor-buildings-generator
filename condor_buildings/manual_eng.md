@@ -259,6 +259,22 @@ When checked, the plugin adds missing buildings from Microsoft Global Building F
 - Adds Microsoft buildings that are missing from OSM
 - Merges the result (OSM + Microsoft) into one file and uses it for generation
 
+### Exclude airports and solar farms
+Right below MSprint. **Off by default** — until you tick it, everything is generated exactly as before.
+
+When ticked, the plugin generates **no objects inside an airfield or a ground solar farm** — no buildings (not even the ones added by MSprint), no wind turbines, no aerialways. A Condor scenery usually already has its own hand-made hangars and buildings at an airfield, so anything generated there would only have to be deleted by hand again; inside a solar farm the panels are built by the *Solar farms* tool.
+
+**Power lines are never excluded** — pylons and cables cross the area normally, so the line still connects to its surroundings.
+
+The airfield outline is found in this order, most precise first:
+1. **aerodrome outline from OSM** (`aeroway=aerodrome`), both a single area and a multipolygon
+2. **runway** — small airfields often have no outline; a corridor is used instead, 200 m to each side of the strip and 200 m beyond both ends (covers the hangars and the apron)
+3. **a single node** — with no outline and no runway, a 1.2 x 1.2 km square around it
+
+Solar farms use the same tags as the *Solar farms* tool (`power=plant` / `power=generator` with a `solar` source), areas and multipolygons alike. Rooftop panels are ignored.
+
+> **Note:** the outlines of solar farms and large airports were added to the download only in version 0.9.12, so **previously downloaded `map_*.osm` files do not contain them**. For the patches where you want the exclusion, delete the old OSM with the trash button below and let it download again.
+
 ### OSM files (trash button)
 Below MSprint there is a small **trash** button labelled **OSM files**. It deletes this patch's OSM files from `Working/Autogen`: `map_{patch_id}.osm`, its `…osm.ori` backup, and the MSprint copy `Working/Autogen/MSprint/map_{patch_id}.osm` (whatever exists). Works in Single Patch and Range (range deletes the files for the whole range). Handy because *Download* reuses an existing `map_{patch_id}.osm` — delete it to force a fresh download.
 
@@ -701,7 +717,10 @@ The **Other objects** box also has a **Bridges** row with an **Import** button a
 - **Pillars** depend on how the arched deck sits:
   - bowed-up **overpass over a road/motorway/rail → NO pillars** (a pier would land on the road below),
   - bowed-up **over a river → exactly 2 pillars** at 1/3 and 2/3 (none in the middle),
-  - otherwise (follows terrain / dry valley) → ~1 pillar per 30 m.
+  - otherwise (follows terrain / dry valley) → ~1 pillar per 50 m.
+- **Collision check (since 0.9.12):** before each pillar is built, the space for it must be free. The check covers the pillar's **whole volume** — from two metres under the terrain up to the deck soffit — plus a 4 m protective zone around it. Only what this plugin generated counts as an obstacle: houses, other bridges, power-line and aerialway pylons, wind turbines, solar panels, substations, transmitters, chimneys. Neither the terrain nor the pillar's own deck is an obstacle.
+- **When the spot is taken,** the pillar slides along the deck to the nearest free place (searching forwards and backwards, up to ±20 m) so no wide unsupported gap appears. Only when that whole stretch is taken is the pillar dropped — typically where another bridge crosses. The number of pillars dropped is reported when the run finishes.
+- **Order matters in Blender:** the check only sees what already exists. Press *Bridges* before generating the buildings and there is nothing to test against — the plugin says so in a warning. In file mode (Batch) it is fine, because the bridges are written last.
 - **Bridges crossing a patch border** read the neighbouring patch's terrain and water so they line up.
 - **If the OSM is missing for a patch**, the bridge import downloads it first automatically (needs internet).
 

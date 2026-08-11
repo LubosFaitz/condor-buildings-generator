@@ -98,6 +98,7 @@ class CONDOR_PT_main_panel(Panel):
         if props.osm_source == 'DOWNLOAD':
             box.label(text="Will download from Overpass API", icon='URL')
         box.prop(props, "use_msprint")
+        box.prop(props, "exclude_airports_solar")
         row_osm = box.row(align=True)
         row_osm.operator("condor.clear_osm_files", text="", icon='TRASH')
         row_osm.label(text="OSM files")

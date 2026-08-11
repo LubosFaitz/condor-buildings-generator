@@ -765,6 +765,8 @@ class CONDOR_OT_import_buildings(Operator):
                     generate_powerlines=props.generate_powerlines,
                     # Aviation warning balls on the top conductor (into 'pylones')
                     generate_warning_balls=props.warning_balls,
+                    # No objects inside airfields / ground solar farms (power lines stay)
+                    exclude_airports_solar=props.exclude_airports_solar,
                 )
 
                 # Override OSM path in config

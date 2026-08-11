@@ -102,6 +102,19 @@ def build_overpass_query(
     parts.append(f'  node["aeroway"="aerodrome"]({bbox});')
     parts.append(f'  way["aeroway"="aerodrome"]({bbox});')
     parts.append(f'  way["aeroway"="runway"]({bbox});')
+    # A big aerodrome is often a multipolygon RELATION, not a single way — without
+    # this its outline is simply not in the file. The ``>;`` recursion below pulls
+    # in the member ways and their nodes, so the outline can be stitched together.
+    parts.append(f'  relation["aeroway"="aerodrome"]({bbox});')
+
+    # Ground solar farms (power=plant / generator with a solar source), ways AND
+    # multipolygon relations — same tags the solar tool downloads on its own
+    # (see blender/solar.py). Tiny and ignored by the building parser; having them
+    # in the shared map_*.osm lets the generator see the farm outlines too.
+    parts.append(f'  way["power"="plant"]["plant:source"="solar"]({bbox});')
+    parts.append(f'  relation["power"="plant"]["plant:source"="solar"]({bbox});')
+    parts.append(f'  way["power"="generator"]["generator:source"="solar"]({bbox});')
+    parts.append(f'  relation["power"="generator"]["generator:source"="solar"]({bbox});')
 
     # Bridges (road + railway + bridge structures) for the optional bridge feature.
     # The building parser ignores non-building ways, so this is harmless. The ``>;``

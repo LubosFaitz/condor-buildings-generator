@@ -51,6 +51,7 @@ class PipelineStats:
     """Statistics from the pipeline run."""
     buildings_parsed: int = 0
     buildings_filtered_edge: int = 0  # Filtered due to patch edge
+    buildings_filtered_zone: int = 0  # Dropped inside an airfield / solar farm
     buildings_processed: int = 0
     buildings_skipped: int = 0
     gabled_eligible: int = 0  # Count of buildings eligible for gabled roof (geometry)
@@ -355,9 +356,168 @@ def _read_substation_polygons(osm_path, projector, min_size_m=100.0):
     return rings
 
 
+# Small airfields often have NO aerodrome outline in OSM - just a runway way (e.g. LKRY
+# Rokycany). The runway then becomes a corridor: this far to each side of the strip and
+# this far beyond both ends, which covers the hangars and the apron next to it.
+RUNWAY_HALF_WIDTH_M = 200.0
+RUNWAY_END_MARGIN_M = 200.0
+
+# Last resort: an aerodrome mapped only as a POINT, with no outline AND no runway. The
+# zone becomes a square of this half-size around it. Kept modest on purpose - a bigger
+# square would start eating a neighbouring village.
+AERODROME_POINT_HALF_M = 600.0
+
+
+def _assemble_exclusion_rings(segments):
+    """Chain open way segments (lists of (x, y)) into CLOSED rings by matching shared
+    endpoints. A single already-closed way comes back as one ring. Needed because a
+    multipolygon relation's outer boundary can be split across several member ways.
+    Same approach as blender/solar.py uses for solar farm relations.
+    """
+    segs = [list(s) for s in segments if len(s) >= 2]
+    used = [False] * len(segs)
+    rings = []
+
+    def same(a, b):
+        return abs(a[0] - b[0]) < 1e-6 and abs(a[1] - b[1]) < 1e-6
+
+    for i in range(len(segs)):
+        if used[i]:
+            continue
+        used[i] = True
+        ring = list(segs[i])
+        extended = True
+        while extended and not same(ring[0], ring[-1]):
+            extended = False
+            for j in range(len(segs)):
+                if used[j]:
+                    continue
+                s = segs[j]
+                if same(ring[-1], s[0]):
+                    ring.extend(s[1:]); used[j] = extended = True
+                elif same(ring[-1], s[-1]):
+                    ring.extend(reversed(s[:-1])); used[j] = extended = True
+                elif same(ring[0], s[-1]):
+                    ring[:0] = s[:-1]; used[j] = extended = True
+                elif same(ring[0], s[0]):
+                    ring[:0] = list(reversed(s[1:])); used[j] = extended = True
+        rings.append(ring)
+    return rings
+
+
+def _read_exclusion_zones(osm_path, projector):
+    """Areas where NO auto-generated object may stand, as (x, y) rings in patch coords.
+
+    Two kinds of area:
+      * airfields  - aeroway=aerodrome (Condor sceneries usually already have their own
+        hand-made hangars/buildings there, so anything generated only has to be deleted)
+      * ground solar farms - power=plant / power=generator with a solar source (the solar
+        tool builds the panels itself; rooftop panels are NOT a farm and are skipped,
+        same rule as blender/solar.py)
+
+    Both are read from simple ways AND from multipolygon relations (a big aerodrome or a
+    farm like FVE Stribro is a relation, not a single way). An aerodrome mapped only as a
+    POINT gets a square of AERODROME_POINT_HALF_M around it, unless it already lies inside
+    an outline that was read above.
+
+    Pure ElementTree, so it works with or without Blender. Never raises - on any problem
+    it returns an empty list and generation simply runs as before.
+    """
+    import xml.etree.ElementTree as _ET
+    try:
+        root = _ET.parse(osm_path).getroot()
+    except Exception:
+        return []
+
+    def is_zone(tags):
+        """An airfield, or a solar farm recognised EXACTLY the way blender/solar.py
+        recognises it (_is_solar_tags) - same tags, same rules, nothing added."""
+        if tags.get("aeroway") == "aerodrome":
+            return True
+        if tags.get("location") == "roof" or tags.get("building"):
+            return False
+        return ((tags.get("power") == "plant" and tags.get("plant:source") == "solar")
+                or (tags.get("power") == "generator"
+                    and tags.get("generator:source") == "solar"))
+
+    coords = {n.get("id"): (float(n.get("lat")), float(n.get("lon")))
+              for n in root.findall("node")}
+
+    # Every way's projected points, indexed by id (relation members reference these).
+    way_pts = {}
+    for way in root.findall("way"):
+        pts = [projector.project(*coords[nd.get("ref")])
+               for nd in way.findall("nd") if nd.get("ref") in coords]
+        if pts:
+            way_pts[way.get("id")] = pts
+
+    rings = []
+    for way in root.findall("way"):
+        tags = {t.get("k"): t.get("v") for t in way.findall("tag")}
+        if not is_zone(tags):
+            continue
+        pts = way_pts.get(way.get("id"))
+        if pts and len(pts) >= 3:
+            rings.append(pts)
+
+    for rel in root.findall("relation"):
+        tags = {t.get("k"): t.get("v") for t in rel.findall("tag")}
+        if not is_zone(tags):
+            continue
+        outers = [way_pts[m.get("ref")] for m in rel.findall("member")
+                  if m.get("type") == "way" and m.get("role") in ("outer", "")
+                  and m.get("ref") in way_pts]
+        for ring in _assemble_exclusion_rings(outers):
+            if len(ring) >= 3:
+                rings.append(ring)
+
+    # Runways: a corridor along the strip. Small airfields (LKRY Rokycany) have no
+    # aerodrome outline at all, only this way; for a big airport the corridor simply
+    # lies inside the outline already collected, which does no harm.
+    import math as _math
+    for way in root.findall("way"):
+        tags = {t.get("k"): t.get("v") for t in way.findall("tag")}
+        if tags.get("aeroway") != "runway":
+            continue
+        pts = way_pts.get(way.get("id"))
+        if not pts or len(pts) < 2:
+            continue
+        (ax, ay), (bx, by) = pts[0], pts[-1]
+        dx, dy = bx - ax, by - ay
+        length = _math.hypot(dx, dy)
+        if length < 50.0:                # taxiway / mis-tagged stub
+            continue
+        ux, uy = dx / length, dy / length        # along the strip
+        px, py = -uy, ux                         # across the strip
+        e, w = RUNWAY_END_MARGIN_M, RUNWAY_HALF_WIDTH_M
+        sx, sy = ax - ux * e, ay - uy * e        # extended ends
+        ex, ey = bx + ux * e, by + uy * e
+        rings.append([(sx + px * w, sy + py * w), (ex + px * w, ey + py * w),
+                      (ex - px * w, ey - py * w), (sx - px * w, sy - py * w)])
+
+    # Airfields that have no outline and no runway at all - only a node. Skipped when the
+    # node sits in a zone already collected (an airfield is usually mapped BOTH ways).
+    from .generators.powerlines import _point_in_polys
+    half = AERODROME_POINT_HALF_M
+    for node in root.findall("node"):
+        tags = {t.get("k"): t.get("v") for t in node.findall("tag")}
+        if tags.get("aeroway") != "aerodrome":
+            continue
+        nid = node.get("id")
+        if nid not in coords:
+            continue
+        x, y = projector.project(*coords[nid])
+        if rings and _point_in_polys(x, y, rings):
+            continue
+        rings.append([(x - half, y - half), (x + half, y - half),
+                      (x + half, y + half), (x - half, y + half)])
+    return rings
+
+
 def _generate_aerialway_group(osm_path, projector, terrain,
                               heightmaps_dir=None, patch_id=None,
-                              translate_x=0.0, translate_y=0.0):
+                              translate_x=0.0, translate_y=0.0,
+                              exclude_zones=None):
     """
     Build the aerialway mesh (cable cars / chair lifts) for a patch from OSM
     aerialway=* ways: a pylon at every support + a straight cable, as a single
@@ -378,6 +538,21 @@ def _generate_aerialway_group(osm_path, projector, terrain,
     if not parse_result.lines:
         return None, None, None
 
+    # 'Exclude airports and solar farms': a lift whose MIDPOINT falls in an excluded
+    # area is dropped whole - cutting out single pylons would leave a torn cable.
+    lines = parse_result.lines
+    if exclude_zones:
+        from .generators.powerlines import _point_in_polys
+        kept = []
+        for line in lines:
+            mid = line.points[len(line.points) // 2] if line.points else None
+            if mid is not None and _point_in_polys(mid.x, mid.y, exclude_zones):
+                continue
+            kept.append(line)
+        lines = kept
+        if not lines:
+            return None, None, None
+
     neighbor = None
     if heightmaps_dir and patch_id is not None:
         neighbor = NeighborTerrain(heightmaps_dir, patch_id, translate_x, translate_y)
@@ -386,17 +561,18 @@ def _generate_aerialway_group(osm_path, projector, terrain,
     templates = load_aerialway_templates()
 
     mesh, aw_stats = generate_aerialway_meshes(
-        parse_result.lines, terrain, templates=templates, neighbor=neighbor)
+        lines, terrain, templates=templates, neighbor=neighbor)
     if mesh.is_empty():
         return None, None, None
 
     # LOD1: identical, except the cabin pylon uses its low-poly model (if present).
     mesh_lod1, _ = generate_aerialway_meshes(
-        parse_result.lines, terrain, templates=templates, neighbor=neighbor, low=True)
+        lines, terrain, templates=templates, neighbor=neighbor, low=True)
     return mesh, mesh_lod1, aw_stats
 
 
-def _generate_wind_turbines_group(osm_path, projector, terrain, bake_world=False, seed=0):
+def _generate_wind_turbines_group(osm_path, projector, terrain, bake_world=False, seed=0,
+                                  exclude_zones=None):
     """
     Build wind turbine meshes for a patch from OSM power=generator nodes.
 
@@ -414,8 +590,17 @@ def _generate_wind_turbines_group(osm_path, projector, terrain, bake_world=False
     from .generators.powerlines import generate_wind_turbines_mesh
 
     parse_result = parse_powerlines(osm_path, projector)
-    if not parse_result.turbines:
+    turbines = parse_result.turbines
+    if not turbines:
         return None, None, 0
+
+    # 'Exclude airports and solar farms': no turbine inside an excluded area.
+    if exclude_zones:
+        from .generators.powerlines import _point_in_polys
+        turbines = [t for t in turbines
+                    if not _point_in_polys(t.x, t.y, exclude_zones)]
+        if not turbines:
+            return None, None, 0
 
     yaw = 0.0
     if bake_world:
@@ -427,7 +612,7 @@ def _generate_wind_turbines_group(osm_path, projector, terrain, bake_world=False
     # placement (foot_z, yaw, random blade spin) is computed once per turbine and
     # stamped into both LODs, so the terrain lookups aren't repeated.
     meshes0, meshes1, count = generate_wind_turbines_mesh(
-        parse_result.turbines, terrain, bake_world=bake_world, yaw=yaw, seed=seed
+        turbines, terrain, bake_world=bake_world, yaw=yaw, seed=seed
     )
     if not meshes0:
         return None, None, 0
@@ -622,6 +807,33 @@ def run_pipeline(
             f"Filtered {stats.buildings_filtered_edge} buildings outside patch bounds, "
             f"{len(buildings)} remaining"
         )
+
+    # Step 5b2: Exclusion zones (opt-in). Airfields and ground solar farms already have
+    # their own scenery objects in Condor (or, for a farm, get their panels from the
+    # solar tool), so a building generated there only has to be deleted by hand again.
+    # Read once here and reused below for the turbines and aerialways. Power lines are
+    # deliberately NOT filtered - they have to cross the area.
+    exclude_zones = []
+    if config.exclude_airports_solar:
+        exclude_zones = _read_exclusion_zones(osm_path, projector)
+        logger.info(f"Exclusion zones (airfields + solar farms): {len(exclude_zones)}")
+
+    if exclude_zones:
+        from .generators.powerlines import _point_in_polys
+        kept = []
+        for b in buildings:
+            c = b.footprint.bbox.center
+            if _point_in_polys(c.x, c.y, exclude_zones):
+                stats.filtered_building_ids.append(b.osm_id)
+                continue
+            kept.append(b)
+        stats.buildings_filtered_zone = len(buildings) - len(kept)
+        buildings = kept
+        if stats.buildings_filtered_zone > 0:
+            logger.info(
+                f"Excluded {stats.buildings_filtered_zone} buildings inside airfields / "
+                f"solar farms, {len(buildings)} remaining"
+            )
 
     # Step 5c: Filter for debug mode (single building)
     if config.debug_osm_id:
@@ -832,6 +1044,7 @@ def run_pipeline(
                 osm_path, projector, terrain,
                 bake_world=(output_mode == "file"),
                 seed=config.global_seed,
+                exclude_zones=exclude_zones,
             )
             if wt0 is not None:
                 lod0_groups.update(wt0)
@@ -851,6 +1064,7 @@ def run_pipeline(
                 osm_path, projector, terrain,
                 heightmaps_dir=config.patch_dir, patch_id=config.patch_id,
                 translate_x=config.translate_x, translate_y=config.translate_y,
+                exclude_zones=exclude_zones,
             )
             if aw0 is not None:
                 if 'pylones' in lod0_groups:
