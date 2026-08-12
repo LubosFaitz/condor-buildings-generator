@@ -80,8 +80,14 @@ PATCH_HALF = 2880.0
 PATCH_SIZE = 5760.0
 SOLAR_PLANT = {"solar"}
 
+# One power station is often drawn in OSM as SEVERAL outlines next to each other (Kencot
+# Hill is two, 28 m apart and overlapping in Y). Outlines closer than this are treated as
+# one farm, so the satellite cut-out and the mask cover the whole station instead of
+# slicing it up. Kept small enough that two genuinely separate farms stay separate.
+FARM_MERGE_GAP = 50.0
+
 ESRI_ZOOM = 18
-ESRI_MAX_TILES = 80
+ESRI_MAX_TILES = 400        # safety stop only; a whole joined farm needs ~120 tiles (~1 MB)
 ESRI_URL = ("https://server.arcgisonline.com/ArcGIS/rest/services/"
             "World_Imagery/MapServer/tile/{z}/{y}/{x}")
 
@@ -152,6 +158,19 @@ def _is_solar_tags(tags):
     )
 
 
+def _solar_kind(tags):
+    """'plant' (the whole site) / 'generator' (one block of panels inside it) / None.
+
+    A big farm is mapped in OSM BOTH ways at once - Kencot Hill is one `power=plant`
+    outline with 306 `power=generator` blocks inside it. Taken at face value that is 307
+    farms, 307 satellite cut-outs and 307 masks for ONE farm, which is unusable. So the
+    site wins and its blocks are dropped (see _parse_solar); a block that lies in no site
+    is still a farm of its own, so farms mapped only as blocks do not disappear."""
+    if not _is_solar_tags(tags):
+        return None
+    return "plant" if tags.get("power") == "plant" else "generator"
+
+
 def _assemble_rings(segments):
     """Chain open way segments (lists of (x, y)) into CLOSED rings by matching shared
     endpoints. A single already-closed way comes back as one ring. Used for multipolygon
@@ -205,20 +224,22 @@ def _parse_solar(root, projector):
         if pts:
             way_pts[w.get("id")] = pts
 
-    polys = []
+    plants, blocks = [], []
     # 1) simple ways tagged as a solar farm
     for w in root.findall("way"):
         tags = {t.get("k"): t.get("v") for t in w.findall("tag")}
-        if not _is_solar_tags(tags):
+        kind = _solar_kind(tags)
+        if kind is None:
             continue
         pts = way_pts.get(w.get("id"))
         if pts and len(pts) >= 3:
-            polys.append(pts)
+            (plants if kind == "plant" else blocks).append(pts)
 
     # 2) multipolygon relations -> stitch the outer member ways into ring(s)
     for rel in root.findall("relation"):
         tags = {t.get("k"): t.get("v") for t in rel.findall("tag")}
-        if not _is_solar_tags(tags):
+        kind = _solar_kind(tags)
+        if kind is None:
             continue
         outers = [way_pts[m.get("ref")]
                   for m in rel.findall("member")
@@ -226,8 +247,87 @@ def _parse_solar(root, projector):
                   and m.get("ref") in way_pts]
         for ring in _assemble_rings(outers):
             if len(ring) >= 3:
-                polys.append(ring)
-    return polys
+                (plants if kind == "plant" else blocks).append(ring)
+
+    # A block of panels lying INSIDE a site is part of that site, not a farm of its own -
+    # otherwise one farm mapped both ways (Kencot Hill: 1 site + 306 blocks) would become
+    # 307 farms, 307 satellite cut-outs and 307 masks. A block outside every site stays.
+    kept, dropped = [], 0
+    for b in blocks:
+        cx = sum(p[0] for p in b) / len(b)
+        cy = sum(p[1] for p in b) / len(b)
+        if any(_point_in_poly(cx, cy, pl) for pl in plants):
+            dropped += 1
+            continue
+        kept.append(b)
+    if dropped:
+        _log(f"{dropped} panel block(s) dropped - they lie inside a solar plant outline")
+    return _merge_near_farms(plants + kept)
+
+
+def _poly_gap(a, b):
+    """Shortest distance between two outlines (0 when their bounding boxes overlap)."""
+    ax0 = min(p[0] for p in a); ax1 = max(p[0] for p in a)
+    ay0 = min(p[1] for p in a); ay1 = max(p[1] for p in a)
+    bx0 = min(p[0] for p in b); bx1 = max(p[0] for p in b)
+    by0 = min(p[1] for p in b); by1 = max(p[1] for p in b)
+    dx = max(0.0, max(bx0 - ax1, ax0 - bx1))       # bbox gap first - cheap
+    dy = max(0.0, max(by0 - ay1, ay0 - by1))
+    if math.hypot(dx, dy) > FARM_MERGE_GAP:
+        return math.hypot(dx, dy)
+    return min(math.hypot(p[0] - q[0], p[1] - q[1]) for p in a for q in b)
+
+
+def _merge_near_farms(polys):
+    """Outlines lying within FARM_MERGE_GAP of each other belong to ONE power station -
+    join them into a single outline (their convex hull), so the farm gets ONE satellite
+    cut-out and ONE mask instead of being sliced into pieces."""
+    n = len(polys)
+    if n < 2:
+        return polys
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if find(i) != find(j) and _poly_gap(polys[i], polys[j]) <= FARM_MERGE_GAP:
+                parent[find(i)] = find(j)
+
+    groups = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    out = []
+    for members in groups.values():
+        if len(members) == 1:
+            out.append(polys[members[0]])
+            continue
+        out.append(_convex_hull([p for k in members for p in polys[k]]))
+    if len(out) < n:
+        _log(f"{n} outline(s) joined into {len(out)} farm(s) (closer than {FARM_MERGE_GAP:.0f} m)")
+    return out
+
+
+def _convex_hull(pts):
+    """Convex hull (monotone chain) - the smallest outline wrapping all the parts."""
+    P = sorted(set(pts))
+    if len(P) < 3:
+        return list(P)
+
+    def half(seq):
+        out = []
+        for p in seq:
+            while len(out) >= 2 and ((out[-1][0] - out[-2][0]) * (p[1] - out[-2][1])
+                                     - (out[-1][1] - out[-2][1]) * (p[0] - out[-2][0])) <= 0:
+                out.pop()
+            out.append(p)
+        return out[:-1]
+
+    return half(P) + half(reversed(P))
 
 
 def _fetch_solar_osm(meta):

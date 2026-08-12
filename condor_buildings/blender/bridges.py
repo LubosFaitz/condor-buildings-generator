@@ -182,7 +182,11 @@ def _parse(root, projector):
             width = BRIDGE_WIDTH.get(cls, 7.0)
             if cls == "road":                    # footpath on each side (motorway has none)
                 width += 2.0 * SIDEWALK_WIDTH
+            # The OSM way id travels with the bridge (and survives the merges below) so a
+            # bridge reaching over the patch border can be recorded as already built and
+            # is not generated a SECOND time by the neighbouring patch.
             bridges.append({"class": cls, "width": width, "points": pts,
+                            "ids": [w.get("id")] if w.get("id") else [],
                             "service": bool(tags.get("service") or tags.get("usage") == "industrial")})
     return bridges, waterways, g_moto, g_other
 
@@ -577,6 +581,8 @@ def _merge_parallel(bridges):
                 nb["width"] = (hi - lo) + bridges[longest]["width"]   # cover all tracks / carriageways
             nb["points"] = [(x + nx * shift, y + ny * shift, ip)
                             for (x, y, ip) in bridges[longest]["points"]]
+            # the merged deck stands for ALL the ways it was made of
+            nb["ids"] = sorted({i for k in ks for i in bridges[k].get("ids", ())})
             out.append(nb)
     return out
 
@@ -720,8 +726,43 @@ def _merge_crossing(specs):
             nb["width"] = 28.0
         else:
             nb["width"] = (hoff - loff) + widest      # cover both carriageways
-        cx, cy = ox + nx * coff, oy + ny * coff
-        nb["xy"] = [(cx + ux * A, cy + uy * A), (cx + ux * B, cy + uy * B)]
+        # KEEP THE SPINE'S REAL PATH, only slid sideways onto the bundle's centre. A
+        # two-point deck between the extremes would straighten a curved viaduct and cut
+        # it through the houses the track actually goes around (London 020029: six
+        # parallel rail bridges merged into one dead-straight 2.6 km slab).
+        path = [(x + nx * coff, y + ny * coff) for (x, y) in specs[spine]["xy"]]
+
+        def along(p):
+            return (p[0] - ox) * ux + (p[1] - oy) * uy
+
+        if len(path) >= 2 and along(path[0]) > along(path[-1]):
+            path.reverse()                            # run the path the same way as A->B
+
+        def stretch(end, other, need):
+            """Push the end point out by `need` metres MEASURED ALONG THE SPINE, following
+            the path's own direction there (so a curved end keeps its curve)."""
+            dx, dy = end[0] - other[0], end[1] - other[1]
+            L = math.hypot(dx, dy)
+            if L < 1e-6:
+                return None
+            dx, dy = dx / L, dy / L
+            adv = abs(dx * ux + dy * uy)              # how much of a step goes along A->B
+            step = need / max(adv, 0.25)              # cap: never blow up on a perpendicular end
+            return (end[0] + dx * step, end[1] + dy * step)
+
+        if len(path) >= 2:
+            gap = A - along(path[0])
+            if gap < -0.5:
+                p = stretch(path[0], path[1], -gap)
+                if p:
+                    path.insert(0, p)
+            gap = B - along(path[-1])
+            if gap > 0.5:
+                p = stretch(path[-1], path[-2], gap)
+                if p:
+                    path.append(p)
+        nb["xy"] = path
+        nb["ids"] = sorted({i for k in members for i in specs[k].get("ids", ())})
         out.append(nb)
     return out
 
@@ -843,6 +884,63 @@ def _cap_rail_width(specs):
             nb["xy"] = [(x + nx * off, y + ny * off) for (x, y) in xy]
             out.append(nb)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Register of bridges already built (so one bridge is not built TWICE)
+# ---------------------------------------------------------------------------
+# A bridge is built whenever ANY of its nodes falls inside the patch, so a bridge
+# reaching over the patch border used to be built WHOLE by both neighbours - two
+# identical decks on top of each other. The register in
+# ``Working/Autogen/bridges/built.json`` remembers which patch built which OSM way:
+#
+#     { "412345678": "040003", "98765432": "040004" }
+#
+# The patch generated FIRST wins; the neighbour then skips that bridge. A patch may
+# always rebuild what it registered itself, so re-generating a patch (and its second
+# LOD pass) keeps its bridges. Delete the file to start over.
+
+def _register_path(autogen_dir):
+    return os.path.join(autogen_dir, "bridges", "built.json")
+
+
+def _load_built_register(autogen_dir):
+    """{osm_way_id: patch_id} of bridges already built. Never raises."""
+    try:
+        import json
+        with open(_register_path(autogen_dir), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_built_register(autogen_dir, register):
+    """Write the register back. Never raises - losing it only means a bridge could be
+    built twice again, never a broken export."""
+    try:
+        import json
+        path = _register_path(autogen_dir)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(register, fh, indent=1, sort_keys=True)
+    except Exception as e:
+        print(f"[bridges] could not write the built-bridges register: {e}")
+
+
+def _drop_already_built(bridges, register, patch_id):
+    """Remove bridges that ANOTHER patch has already built. A bridge this same patch
+    registered stays, so re-generating a patch does not make its bridges disappear."""
+    if not register or patch_id is None:
+        return bridges, 0
+    kept, dropped = [], 0
+    for b in bridges:
+        owner = next((register.get(i) for i in b.get("ids", ()) if i in register), None)
+        if owner is not None and owner != patch_id:
+            dropped += 1
+            continue
+        kept.append(b)
+    return kept, dropped
 
 
 # ---------------------------------------------------------------------------
@@ -1001,7 +1099,8 @@ def _hits_other_decks(specs, cur, x0, x1, y0, y1, z0, z1):
 
 
 def _build_bridges(bridges, waterways, z_at, is_water=None, railings=True,
-                   g_moto=None, g_other=None, obstacles=None):
+                   g_moto=None, g_other=None, obstacles=None,
+                   register=None, patch_id=None):
     """Build merged (verts, faces). verts = [(x,y,z)], faces = [(i,j,k,l)/(i,j,k)]
     with 0-based indices. Returns (verts, faces, n_bridges, n_pillars).
     railings=False drops the zabradli (used for the lighter LOD1).
@@ -1013,6 +1112,14 @@ def _build_bridges(bridges, waterways, z_at, is_water=None, railings=True,
     g_other = g_other or []
     gm_bounds = [_bbox(w) for w in g_moto]
     go_bounds = [_bbox(w) for w in g_other]
+    # A bridge already built by a NEIGHBOURING patch is dropped here, before anything
+    # else - it reaches over the border and is standing in the world already.
+    bridges, n_already = _drop_already_built(bridges, register, patch_id)
+    # Only a bridge that REACHES OUT of the patch can be seen (and built) by the
+    # neighbour, so only those are worth registering. One that lies wholly inside is
+    # nobody else's business and would only clutter the file.
+    out_ids = {i for b in bridges for i in b.get("ids", ())
+               if any(not ip for (_x, _y, ip) in b["points"])}
     bridges = _merge_parallel(bridges)
 
     def av(p, uv):
@@ -1056,7 +1163,8 @@ def _build_bridges(bridges, waterways, z_at, is_water=None, railings=True,
             xy = _span_water(xy, is_water)
         # remember HOW it qualified -> drives the pillars later (crossing = none, water = 2)
         specs.append({"xy": xy, "width": b["width"], "class": b["class"],
-                      "water": water_q, "crossing": cross_q})
+                      "water": water_q, "crossing": cross_q,
+                      "ids": list(b.get("ids", ()))})
 
     # fuse the two carriageways of one road (their bank-to-bank spans cross into an 'X')
     # into a single deck; genuinely separate decks with a gap stay side by side
@@ -1299,8 +1407,14 @@ def _build_bridges(bridges, waterways, z_at, is_water=None, railings=True,
             n_pillars += 1
 
         n_bridges += 1
+        # This patch owns the bridge from now on - the neighbour will skip it. Only
+        # bridges that stick out past the patch edge are recorded (see out_ids).
+        if register is not None and patch_id is not None:
+            for i in spec.get("ids", ()):
+                if i in out_ids:
+                    register[i] = patch_id
 
-    return verts, faces, uvs, n_bridges, n_pillars, n_skipped, n_pil_blocked
+    return verts, faces, uvs, n_bridges, n_pillars, n_skipped, n_pil_blocked, n_already
 
 
 # ---------------------------------------------------------------------------
@@ -1436,7 +1550,7 @@ class CONDOR_OT_import_bridges(Operator):
                          for x in range(props.patch_x_min, props.patch_x_max + 1)
                          for y in range(props.patch_y_min, props.patch_y_max + 1)]
 
-        total_bridges = total_pillars = total_skipped = total_blocked = 0
+        total_bridges = total_pillars = total_skipped = total_blocked = total_already = 0
         total_found = total_waterways = total_existing = 0
         missing_osm = []
         no_obstacles = []     # patches with nothing generated yet -> collision check blind
@@ -1526,14 +1640,17 @@ class CONDOR_OT_import_bridges(Operator):
                     _pcol, ox, oy, _obstacle_mask(bridges))
                 if obstacles.scanned == 0 and patch_id not in no_obstacles:
                     no_obstacles.append(patch_id)
-                verts, faces, uvs, nb, npil, nsk, nblk = _build_bridges(
+                register = _load_built_register(paths['autogen'])
+                verts, faces, uvs, nb, npil, nsk, nblk, nalr = _build_bridges(
                     bridges, waterways, z_at, is_water, railings, g_moto, g_other,
-                    obstacles)
+                    obstacles, register, patch_id)
+                _save_built_register(paths['autogen'], register)
                 if vi == 0:
                     total_skipped += nsk
                     total_bridges += nb
                     total_pillars += npil
                     total_blocked += nblk
+                    total_already += nalr
                 if not verts or nb == 0:
                     continue
 
@@ -1578,6 +1695,8 @@ class CONDOR_OT_import_bridges(Operator):
                f"bridges in OSM {total_found}, rivers {total_waterways}")
         if total_blocked:
             msg += f", pillars skipped (collision) {total_blocked}"
+        if total_already:
+            msg += f", bridges already built by a neighbouring patch {total_already}"
         if total_existing:
             msg += f", already imported {total_existing} (skipped)"
         if missing_osm:
@@ -1676,8 +1795,14 @@ def _generate_patch_geometry(paths, patch_id, railings=True, obstacles=None):
     if setup is None:
         return None
     bridges, waterways, g_moto, g_other, z_at, is_water = setup
-    verts, faces, uvs, nb, npil, nsk, nblk = _build_bridges(
-        bridges, waterways, z_at, is_water, railings, g_moto, g_other, obstacles)
+    register = _load_built_register(paths['autogen'])
+    verts, faces, uvs, nb, npil, nsk, nblk, nalr = _build_bridges(
+        bridges, waterways, z_at, is_water, railings, g_moto, g_other, obstacles,
+        register, patch_id)
+    _save_built_register(paths['autogen'], register)
+    if nalr:
+        print(f"[bridges] patch {patch_id}: {nalr} bridge(s) skipped - already built by "
+              f"a neighbouring patch")
     if nblk:
         print(f"[bridges] patch {patch_id}: {nblk} pillar(s) skipped - collision with "
               f"generated objects")

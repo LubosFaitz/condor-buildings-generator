@@ -52,6 +52,7 @@ class PipelineStats:
     buildings_parsed: int = 0
     buildings_filtered_edge: int = 0  # Filtered due to patch edge
     buildings_filtered_zone: int = 0  # Dropped inside an airfield / solar farm
+    buildings_filtered_water: int = 0  # Dropped for standing wholly on water
     buildings_processed: int = 0
     buildings_skipped: int = 0
     gabled_eligible: int = 0  # Count of buildings eligible for gabled roof (geometry)
@@ -354,6 +355,74 @@ def _read_substation_polygons(osm_path, projector, min_size_m=100.0):
         if max(max(xs) - min(xs), max(ys) - min(ys)) >= min_size_m:
             rings.append(ring)
     return rings
+
+
+# Water from the patch texture's ALPHA channel (t<patch>.dds, DXT3): water = alpha below
+# this, and the DDS byte rows run top-first so V is flipped. Same values blender/bridges.py
+# verified on t036024.dds; the reader is repeated here on purpose - bridges.py is a
+# removable module and main.py must not depend on it.
+WATER_ALPHA_THRESHOLD = 0.5
+WATER_IS_LOW_ALPHA = True
+ORTHO_V_FLIP = True
+PATCH_HALF_M = 2880.0
+PATCH_SIZE_M = 5760.0
+
+
+def _load_water_sampler(path):
+    """Return is_water(x, y) read straight from the patch texture's alpha channel, or None
+    when the file is missing or is not a DXT3 DDS (then nothing is excluded). Only the
+    alpha of each 4x4 block is decoded, on demand. Never raises."""
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        import struct
+        d = open(path, "rb").read()
+        if d[:4] != b"DDS " or d[84:88] != b"DXT3":
+            return None
+        h = struct.unpack("<I", d[12:16])[0]
+        w = struct.unpack("<I", d[16:20])[0]
+        bw, bh = w // 4, h // 4
+        base = 128
+        if len(d) < base + bw * bh * 16:
+            return None
+    except Exception:
+        return None
+
+    thr = WATER_ALPHA_THRESHOLD * 255.0
+
+    def is_water(x, y):
+        if not (-PATCH_HALF_M <= x <= PATCH_HALF_M and -PATCH_HALF_M <= y <= PATCH_HALF_M):
+            return False                     # outside the patch = treat as land
+        u = (x + PATCH_HALF_M) / PATCH_SIZE_M
+        v = (y + PATCH_HALF_M) / PATCH_SIZE_M
+        if ORTHO_V_FLIP:
+            v = 1.0 - v
+        bx = min(max(int(u * bw), 0), bw - 1)
+        by = min(max(int(v * bh), 0), bh - 1)
+        off = base + (by * bw + bx) * 16     # DXT3: 8 alpha bytes, then 8 colour bytes
+        tot = 0
+        for k in range(8):
+            b = d[off + k]
+            tot += (b & 0x0F) + ((b >> 4) & 0x0F)
+        a = (tot * 17) // 16                 # mean 4-bit alpha -> 0..255
+        return (a < thr) if WATER_IS_LOW_ALPHA else (a > thr)
+
+    return is_water
+
+
+def _find_patch_texture(config):
+    """The patch texture t<patch>.dds, wherever this scenery keeps it, or None."""
+    ls = os.path.dirname(os.path.dirname(config.patch_dir))   # ...\Working\HeightMaps -> ...
+    names = f"t{config.patch_id}.dds"
+    for cand in (
+        os.path.join(ls, "Textures", names),
+        os.path.join(config.patch_dir, names),
+        os.path.join(os.path.dirname(config.patch_dir), "Textures", names),
+        os.path.join(ls, "Working", "Textures", names),
+    ):
+        if os.path.exists(cand):
+            return cand
+    return None
 
 
 # Small airfields often have NO aerodrome outline in OSM - just a runway way (e.g. LKRY
@@ -834,6 +903,32 @@ def run_pipeline(
                 f"Excluded {stats.buildings_filtered_zone} buildings inside airfields / "
                 f"solar farms, {len(buildings)} remaining"
             )
+
+    # Step 5b3: Buildings standing on WATER. The patch texture's alpha channel marks the
+    # water, so a footprint that is water at EVERY one of its points is a mis-placed
+    # building (MSprint footprints are machine-made and sometimes land in a river). One
+    # point on dry land is enough to keep it, so quaysides and riverbank houses stay.
+    if config.exclude_airports_solar:
+        tex = _find_patch_texture(config)
+        is_water = _load_water_sampler(tex)
+        if is_water is None:
+            logger.info("No patch texture found - the water check is skipped")
+        else:
+            logger.info(f"Water check from {os.path.basename(tex)}")
+            kept = []
+            for b in buildings:
+                ring = b.footprint.outer_ring
+                if ring and all(is_water(p.x, p.y) for p in ring):
+                    stats.filtered_building_ids.append(b.osm_id)
+                    continue
+                kept.append(b)
+            stats.buildings_filtered_water = len(buildings) - len(kept)
+            buildings = kept
+            if stats.buildings_filtered_water > 0:
+                logger.info(
+                    f"Excluded {stats.buildings_filtered_water} buildings standing on "
+                    f"water, {len(buildings)} remaining"
+                )
 
     # Step 5c: Filter for debug mode (single building)
     if config.debug_osm_id:

@@ -349,10 +349,12 @@ class CondorBuildingsProperties(PropertyGroup):
     )
 
     exclude_airports_solar: BoolProperty(
-        name="Exclude airports and solar farms",
+        name="Exclude airports, solar farms and water",
         description=(
             "Generate no objects inside an airfield (aeroway=aerodrome) or a ground solar "
-            "farm - those places already have their own Condor scenery objects / panels. "
+            "farm - those places already have their own Condor scenery objects / panels - "
+            "and drop a building whose footprint stands WHOLLY on water (from the alpha "
+            "channel of the patch texture t<patch>.dds); one point on dry land keeps it. "
             "Power lines are kept, they may cross the area. Needs a freshly downloaded "
             "map_*.osm (older files do not contain the solar farm outlines)"
         ),

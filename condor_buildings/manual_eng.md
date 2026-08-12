@@ -259,10 +259,10 @@ When checked, the plugin adds missing buildings from Microsoft Global Building F
 - Adds Microsoft buildings that are missing from OSM
 - Merges the result (OSM + Microsoft) into one file and uses it for generation
 
-### Exclude airports and solar farms
+### Exclude airports, solar farms and water
 Right below MSprint. **Off by default** — until you tick it, everything is generated exactly as before.
 
-When ticked, the plugin generates **no objects inside an airfield or a ground solar farm** — no buildings (not even the ones added by MSprint), no wind turbines, no aerialways. A Condor scenery usually already has its own hand-made hangars and buildings at an airfield, so anything generated there would only have to be deleted by hand again; inside a solar farm the panels are built by the *Solar farms* tool.
+When ticked, the plugin generates **no objects inside an airfield or a ground solar farm** — no buildings (not even the ones added by MSprint), no wind turbines, no aerialways. It also **drops a building standing on water** (see below). A Condor scenery usually already has its own hand-made hangars and buildings at an airfield, so anything generated there would only have to be deleted by hand again; inside a solar farm the panels are built by the *Solar farms* tool.
 
 **Power lines are never excluded** — pylons and cables cross the area normally, so the line still connects to its surroundings.
 
@@ -272,6 +272,10 @@ The airfield outline is found in this order, most precise first:
 3. **a single node** — with no outline and no runway, a 1.2 x 1.2 km square around it
 
 Solar farms use the same tags as the *Solar farms* tool (`power=plant` / `power=generator` with a `solar` source), areas and multipolygons alike. Rooftop panels are ignored.
+
+**Buildings on water.** The plugin reads the **alpha channel of the patch texture** `t<patch>.dds`, which is where the water is marked. A building whose footprint is **wholly** on water is not built. A single footprint point on dry land keeps it, so quaysides and riverbank houses do not disappear. This mainly helps with MSprint, whose footprints are machine-derived from aerial imagery and occasionally land in the middle of a river.
+
+> The water check needs a **DXT3** texture. A scenery with DXT1 textures (which carry no alpha) simply skips this part, and the rest of the checkbox keeps working. A missing texture is skipped the same way.
 
 > **Note:** the outlines of solar farms and large airports were added to the download only in version 0.9.12, so **previously downloaded `map_*.osm` files do not contain them**. For the patches where you want the exclusion, delete the old OSM with the trash button below and let it download again.
 
@@ -718,9 +722,12 @@ The **Other objects** box also has a **Bridges** row with an **Import** button a
   - bowed-up **overpass over a road/motorway/rail → NO pillars** (a pier would land on the road below),
   - bowed-up **over a river → exactly 2 pillars** at 1/3 and 2/3 (none in the middle),
   - otherwise (follows terrain / dry valley) → ~1 pillar per 50 m.
+- **Merged decks follow the real route (since 0.9.13).** Where several bridges run side by side (a multi-track railway, a dual carriageway) the plugin builds them as one deck. It used to run that deck straight from end to end, so a curving viaduct came out dead straight and cut through the houses the track goes around. It now takes the real path of the longest of them and only slides it sideways onto the shared centreline.
+- **A bridge crossing the patch border is built only once (since 0.9.13).** See below.
 - **Collision check (since 0.9.12):** before each pillar is built, the space for it must be free. The check covers the pillar's **whole volume** — from two metres under the terrain up to the deck soffit — plus a 2 m protective zone around it. Only what this plugin generated counts as an obstacle: houses, other bridges, power-line and aerialway pylons, wind turbines, solar panels, substations, transmitters, chimneys. Neither the terrain nor the pillar's own deck is an obstacle.
 - **When the spot is taken,** the pillar slides along the deck to the nearest free place (searching forwards and backwards, up to ±20 m) so no wide unsupported gap appears. Only when that whole stretch is taken is the pillar dropped — typically where another bridge crosses. The number of pillars dropped is reported when the run finishes.
 - **Order matters in Blender:** the check only sees what already exists. Press *Bridges* before generating the buildings and there is nothing to test against — the plugin says so in a warning. In file mode (Batch) it is fine, because the bridges are written last.
+- **A bridge over the patch border.** A bridge reaching from one patch into the next used to be built WHOLE by both — two identical decks on top of each other. The plugin now keeps a register, `Working/Autogen/bridges/built.json`, recording which patch built which bridge; the neighbour then skips it. Only bridges that actually stick out past the patch edge are recorded. The patch generated first wins. The number skipped is reported when the run finishes, and deleting the file starts over.
 - **Bridges crossing a patch border** read the neighbouring patch's terrain and water so they line up.
 - **If the OSM is missing for a patch**, the bridge import downloads it first automatically (needs internet).
 
@@ -742,6 +749,7 @@ The bridge appears in the generation log as the `bridges` object. The whole brid
 The **Other objects** box has a **Solar** row with **Import**, **Merge**, **Flip selected**, **Mask on terrain** / **Save mask** and (while the scenery hasn't been scanned yet) **Scan solar farms** buttons. It generates **ground** solar farms (no rooftop panels) as tilted panels on posts, with the `solar.dds` texture (material `condor_solar`).
 
 **How it works:**
+0. **One power station = one cut-out and one mask (since 0.9.13).** A big farm is often mapped in OSM twice over: once as the whole site, and inside it every block of panels as its own area. That used to make a separate "farm" out of every block — Kencot Hill in England came out as 308 farms and over 1100 files for a single power station, which made the mask impossible to edit. Blocks lying inside a site outline are now dropped, and outlines closer than 50 m are joined into one. A block inside no site is still treated as a farm of its own.
 1. The farm outline is taken from OSM (`power=plant`/`plant:source=solar` or `power=generator`/`generator:source=solar`, including **relations/multipolygons**; rooftop panels are excluded).
 2. **ESRI World Imagery** tiles (aerial photo) over the farm are downloaded into `Working/Autogen/condor_esri_cache/<patch>/`.
 3. A **black/white panel mask** is built from the orthophoto (black = panel) and the outline is auto-aligned to the panels.
