@@ -759,6 +759,61 @@ The bridge appears in the generation log as the `bridges` object. The whole brid
 
 ---
 
+## Tree rows — in the Other objects section (since 0.9.15)
+
+At the very top of *Other objects*. It plants trees along whatever is mapped in OSM —
+alleys, tree rows, the hedgerows between fields, the trees lining a road, and single trees.
+
+**Where the data comes from.** Both ways and nodes: `natural=tree_row`, `barrier=hedge`,
+`natural=hedge`, `barrier=hedge_bank`, `fence_type=hedge`, roads and waterways carrying
+`tree_lined` (including `tree_lined:left` / `:right` / `:both`, `denotation=avenue` and the
+old `alley=*`), and `natural=tree` for a single tree. The values `no` and `separate` are
+deliberately not built — with `separate` the trees are drawn as their own way next to it,
+so they would otherwise come out twice.
+
+**The plugin fetches the data itself.** The buildings download is left untouched: someone
+who does not build trees downloads nothing extra. Only when the trees are built does the
+plugin look into `map_<patch>.osm`, and when those tags are not there it sends one small
+query and merges the result into that same file. The original content is kept and the
+write goes through a temp file. An invisible marker stops it asking again.
+
+**Four categories**, each its own object in the outliner with its own model in
+`assets/3Dobjects` (all sharing the one texture `tree_rows.dds`):
+
+| object | what is in it | model |
+|---|---|---|
+| `tree_rows_1_alley` | alleys and tree rows | `tree_rows_1_alley.obj` |
+| `tree_rows_2_hedge` | hedgerows, bushes | `tree_rows_2_hedge.obj` |
+| `tree_rows_3_roadside` | trees lining a road | `tree_rows_3_roadside.obj` |
+| `tree_rows_4_solitary` | single trees | `tree_rows_4_solitary.obj` |
+
+A model is used at its own size, only shrunk by up to 25 % at random so neighbouring trees
+are not clones. A `height` mapped in OSM scales the model to it. When a model is missing
+from assets, that category falls back to the built-in crossed billboard.
+
+**Spacing** is set in the **add-on preferences** (the same sliders are in the panel):
+**Trees** 10–30 m (default 20) and **Hedges** 5–10 m (default 8). Hedge bushes are widened
+to span the spacing, so a hedgerow is a continuous strip. Moving a slider rebuilds the
+trees already in the scene.
+
+**No tree stands in water.** Water is read from the alpha of the patch orthophoto
+`t<patch>.dds`, the same way the bridges do it. A tree that would land on water is pushed
+further off the centreline, and if there is no dry land it is not built. Where a road or a
+waterway has `width`, the offset is half of it plus 3 m of bank; otherwise 6 m.
+
+**Merge** joins the categories of each patch into one `tree_rows` object with the single
+`condor_tree` material and removes the per-category colours. The sliders grey out
+afterwards so the merged object (and your own edits in it) cannot be thrown away.
+
+**Batch** does the same without Blender: it places the models identically and writes one
+finished `tree_rows` block with one material into `o<patch>.obj`, copying the texture into
+`autogen/Textures`.
+
+**Copernicus** (checkbox, off by default) adds trees from the European Copernicus Small
+Woody Features layer — the map of woody vegetation outside forests — useful where OSM has
+nothing mapped. One image per patch is downloaded and cached. Only narrow strips are kept,
+solid blocks are dropped. Europe only, and it cannot tell a bush from a tree.
+
 ## Solar farms — in the Other objects section
 
 > ⚠️ **Single patch only** and it is an **optional, semi-automatic feature** — decide for yourself whether you want to use it. Sometimes the plugin builds the panel mask automatically well and the farm generates nicely; **other times the mask has to be fixed by hand**, because **OSM only contains the outline of the whole plant**, not the individual panel rows. So the whole workflow is up to the user (whether you want the solar farms at all, whether you want to edit the mask manually, etc.).

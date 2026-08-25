@@ -521,6 +521,16 @@ class CondorBuildingsProperties(PropertyGroup):
     )
 
 
+def _tree_rows_changed(context):
+    """Changing a tree-row spacing rebuilds what is already in the scene. Guarded, so
+    deleting blender/tree_rows.py changes nothing here."""
+    try:
+        from . import tree_rows
+        tree_rows._spacing_update(None, context)
+    except Exception:
+        pass
+
+
 class CondorBuildingsPreferences(AddonPreferences):
     """Add-on preferences (Edit > Preferences > Add-ons > Condor Buildings).
 
@@ -596,6 +606,37 @@ class CondorBuildingsPreferences(AddonPreferences):
         default=True,
     )
 
+    # --- TREE ROWS add-on (removable: delete blender/tree_rows.py; these two settings
+    # then simply go unused) ---------------------------------------------------------
+    # They live here, not in the scene, so the spacing a user settles on is remembered
+    # for every .blend they open afterwards.
+    tree_row_spacing: FloatProperty(
+        name="Tree spacing",
+        description="Distance between the trees along a tree row / an alley (m)",
+        default=20.0, min=10.0, max=30.0, step=50, precision=1,
+        subtype='DISTANCE', unit='LENGTH',
+        update=lambda self, ctx: _tree_rows_changed(ctx),
+    )
+
+    tree_row_copernicus: BoolProperty(
+        name="Copernicus",
+        description=("Also build trees from the Copernicus Small Woody Features layer - "
+                     "the European map of woody vegetation outside forests (hedgerows, "
+                     "tree lines). EUROPE ONLY, downloaded from the internet (one image "
+                     "per patch, then cached). Off by default"),
+        default=False,
+        update=lambda self, ctx: _tree_rows_changed(ctx),
+    )
+
+    tree_row_hedge_spacing: FloatProperty(
+        name="Hedge spacing",
+        description="Distance between the bushes of a hedgerow (m). The bushes are "
+                    "widened to span it, so the hedge stays a continuous strip",
+        default=8.0, min=5.0, max=10.0, step=50, precision=1,
+        subtype='DISTANCE', unit='LENGTH',
+        update=lambda self, ctx: _tree_rows_changed(ctx),
+    )
+
     def draw(self, context):
         layout = self.layout
         layout.prop(self, "terrain_smooth_enable")
@@ -615,6 +656,13 @@ class CondorBuildingsPreferences(AddonPreferences):
 
         col.prop(self, "terrain_smooth_preserve_volume")
         col.prop(self, "terrain_smooth_normalized")
+
+        # --- TREE ROWS add-on (removable) ---
+        box = layout.box()
+        box.label(text="Tree rows", icon='OUTLINER_OB_MESH')
+        box.prop(self, "tree_row_spacing")
+        box.prop(self, "tree_row_hedge_spacing")
+        box.prop(self, "tree_row_copernicus")
 
 
 # Registration

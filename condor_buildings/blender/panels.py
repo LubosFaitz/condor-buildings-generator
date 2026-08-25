@@ -146,6 +146,13 @@ class CONDOR_PT_main_panel(Panel):
             icon='TRIA_DOWN' if props.show_other_objects else 'TRIA_RIGHT',
         )
         if props.show_other_objects:
+            # --- TREE ROW add-on (removable: delete blender/tree_rows.py) ---
+            try:
+                from . import tree_rows
+                tree_rows.draw_panel(box, context)
+            except Exception:
+                pass
+
             # Chimney
             sub = box.box()
             row_title = sub.row(align=True)
