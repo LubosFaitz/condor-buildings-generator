@@ -822,6 +822,63 @@ Woody Features layer — the map of woody vegetation outside forests — useful 
 nothing mapped. One image per patch is downloaded and cached. Only narrow strips are kept,
 solid blocks are dropped. Europe only, and it cannot tell a bush from a tree.
 
+## Fences — in the Other objects section (since 0.9.16)
+
+A **Fence** row with **Import**, **Merge**, a **Batch** checkbox and a **Posts** slider.
+It builds a fence wherever OSM has a line tagged `barrier=fence`. Only ways are read: a
+fence mapped on a node has nothing to build, and a way tagged `area=yes` is the outline of
+a plot of land, not a run of fence.
+
+**How the posts are spaced.** A post stands at **every corner** of the fence, and the
+stretches between corners are filled at **4 m**. No gap is ever longer than that: the
+number of gaps is rounded UP and whatever is left over is shared equally between the two
+END gaps, so the stretch stays symmetrical. A 10 m stretch therefore gets 3 + 4 + 3, a
+14 m one gets 3 + 4 + 4 + 3. It is worked out per segment, not by stepping along the whole
+line, so a corner never gets two posts side by side and no short stub is left at the end.
+The spacing is a **Posts** slider (2–8 m, default 4) in the add-on preferences, shown in
+the panel as well.
+
+**The post** is the ready-made model `assets/pylons/fence_post.obj` — an octagonal wooden
+post **0.16 m** across, standing **1.30 m** above the terrain with another **1 m sunk
+below** it, so no hole shows underneath even on a steep slope.
+
+**Two wires** hang off the post: the top one **0.10 m below its head**, the lower one
+**0.60 m below the top one** (with a 1.30 m post that is 1.20 m and 0.60 m above the
+ground). They are thin (a 1 cm triangular cross-section) and **do not sag** — straight
+from post to post. The wire runs THROUGH the posts and is **jointed only where it really
+bends**, in plan or in height; over flat, straight ground the whole fence is one unbroken
+wire.
+
+Post and wires are **smooth-shaded**: the post carries its own normals from the model, the
+wire's radiate out from its axis so it looks round. The smoothing is written into the OBJ
+as well, so it reaches Condor.
+
+**The material is the same one the powerlines and aerialways use** — `pylones` on
+`Pylons.dds`. The post model is already mapped onto the wooden strip in that texture and
+the wire takes its colour from the dark grey block at the top of it. No new texture is
+needed.
+
+**One fence line = one object** `fence`. **Merge** joins a patch's fences into one.
+
+**A fence crossing the patch border.** Where a fence runs out of the square being built,
+ONE more post is put up **just beyond the edge** so the wire has something to end in — and
+its height is read from the **neighbouring patch's height map**, not from the one being
+built. That post is written into `Working/Autogen/fences_border.txt`, in the neighbour's
+own coordinates. When you then build the neighbour, the post is already standing, so it is
+**not built a second time** — the wire is simply strung to it. A fence may leave through
+all four sides at once and the order in which you build the squares makes no difference.
+Rebuilding a square replaces the rows it wrote before; deleting the file resets everything.
+
+**The data is fetched on demand.** `barrier=fence` is a very common tag, so it is NOT
+added to the main query — anyone who does not build fences downloads nothing extra. Only
+when a fence is actually being built does the plugin look into `map_<patch>.osm`, and if
+there is none, it sends one small query of its own and merges the result into that file. A
+patch that genuinely has no fence is marked and not asked about again.
+
+**Watch out for the overlap with tree rows.** A line tagged both `barrier=fence` and
+`fence_type=hedge` is built twice: the *Tree row* section makes a hedgerow out of it and
+*Fence* puts posts and wire on it. Without `fence_type=hedge` only this section builds it.
+
 ## Solar farms — in the Other objects section
 
 > ⚠️ **Single patch only** and it is an **optional, semi-automatic feature** — decide for yourself whether you want to use it. Sometimes the plugin builds the panel mask automatically well and the farm generates nicely; **other times the mask has to be fixed by hand**, because **OSM only contains the outline of the whole plant**, not the individual panel rows. So the whole workflow is up to the user (whether you want the solar farms at all, whether you want to edit the mask manually, etc.).

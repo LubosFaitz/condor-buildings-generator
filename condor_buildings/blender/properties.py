@@ -637,6 +637,17 @@ class CondorBuildingsPreferences(AddonPreferences):
         update=lambda self, ctx: _tree_rows_changed(ctx),
     )
 
+    # --- FENCE add-on (removable: delete blender/fences.py; this setting then simply
+    # goes unused) --------------------------------------------------------------------
+    fence_post_spacing: FloatProperty(
+        name="Post spacing",
+        description="Target distance between two fence posts (m). A post always stands "
+                    "in every corner of the fence; between the corners the stretch is "
+                    "divided evenly by roughly this much",
+        default=4.0, min=2.0, max=8.0, step=50, precision=1,
+        subtype='DISTANCE', unit='LENGTH',
+    )
+
     def draw(self, context):
         layout = self.layout
         layout.prop(self, "terrain_smooth_enable")
@@ -663,6 +674,11 @@ class CondorBuildingsPreferences(AddonPreferences):
         box.prop(self, "tree_row_spacing")
         box.prop(self, "tree_row_hedge_spacing")
         box.prop(self, "tree_row_copernicus")
+
+        # --- FENCE add-on (removable) ---
+        box = layout.box()
+        box.label(text="Fences", icon='MOD_ARRAY')
+        box.prop(self, "fence_post_spacing")
 
 
 # Registration

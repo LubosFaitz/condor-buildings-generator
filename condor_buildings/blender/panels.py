@@ -183,6 +183,13 @@ class CONDOR_PT_main_panel(Panel):
             except Exception:
                 pass
 
+            # --- FENCE add-on (removable: delete blender/fences.py) ---
+            try:
+                from . import fences
+                fences.draw_panel(box, context)
+            except Exception:
+                pass
+
         # --- Import Button ---
         layout.separator()
 

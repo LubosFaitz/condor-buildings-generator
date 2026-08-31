@@ -12,14 +12,14 @@ Milestone A: Single-patch prototype with LOD0/LOD1 OBJ export.
 Milestone B: Blender addon integration.
 """
 
-__version__ = "0.9.15"
+__version__ = "0.9.16"
 __author__ = "Condor Buildings Team"
 
 # Blender addon metadata (must be at package root for Blender to detect)
 bl_info = {
     "name": "Condor Buildings Generator",
     "author": "Condor Buildings Team (Wiek Schoenmakers, Juan Luis Gabriel, Claude)",
-    "version": (0, 9, 15),
+    "version": (0, 9, 16),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Condor",
     "description": "Generate 3D buildings from OSM data for Condor 3 flight simulator",
@@ -66,9 +66,22 @@ def register():
     except Exception as e:
         print(f"Condor Buildings: tree rows not loaded ({e})")
 
+    # --- FENCE add-on (removable: delete blender/fences.py) ---
+    try:
+        from .blender import fences
+        fences.register()
+    except Exception as e:
+        print(f"Condor Buildings: fences not loaded ({e})")
+
 
 def unregister():
     """Unregister addon from Blender."""
+    # --- FENCE add-on (removable: delete blender/fences.py) ---
+    try:
+        from .blender import fences
+        fences.unregister()
+    except Exception:
+        pass
     # --- TREE ROW add-on (removable) ---
     try:
         from .blender import tree_rows
