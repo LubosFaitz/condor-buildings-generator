@@ -2,7 +2,7 @@
 
 ### ➡️ [Download the latest release](https://github.com/LubosFaitz/condor-buildings-generator/releases/latest)
 
-[![Version](https://img.shields.io/badge/version-0.9.17-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
+[![Version](https://img.shields.io/badge/version-0.9.18-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org/)
 [![Blender](https://img.shields.io/badge/blender-4.0+-orange.svg)](https://www.blender.org/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
@@ -42,6 +42,29 @@ python -m condor_buildings.main \
 8. Select a landscape from the dropdown
 9. Set patch range (X/Y min/max) or enable single patch mode
 10. Click "Generate Buildings"
+
+**New in v0.9.18 — Condor .c3d files and downloads that get through:**
+- **The Export Condor OBJ+MTL button is split into two.** **Export OBJ** does exactly what it always did — Condor-ready OBJ+MTL written into `Working/Autogen`. **Export C3D** exports into the new `Working/Autogen/C3D` folder, converts the result into Condor's `.c3d` format and deletes the helper OBJ+MTL from that folder afterwards. With **Both LODs** the two LODs are joined into **one merged `.c3d`** holding both.
+- **A new `Save as C3D` / `Save as OBJ` checkbox** in the *Output* box. Checked, the generation writes straight into `Working/Autogen/C3D` as `.c3d` (the helper OBJ and MTL are removed); unchecked, it writes OBJ+MTL into `Working/Autogen` exactly as before. It works both in **Batch download** mode and with **Batch processing** on, and the run log and reports stay in `Working/Autogen`.
+- **The Output checkbox now names itself after its mode.** It decides whether you see the result in the scene straight away or whether it ends up only as files on disk:
+
+  - **Checked ("Import to Blender")** — the generated buildings are loaded straight into Blender, into the collections `Condor_<landscape>_<patch>` (and `_LOD1`), so you can look at them and edit them. With `terrain` checked as well, the terrain of the patch is imported along with them.
+  - **Unchecked ("Batch download")** — nothing is loaded into Blender; the buildings are written straight out as files into `Working/Autogen` (or as `.c3d` into `Working/Autogen/C3D` when `Save as C3D` is checked). It is the mode for processing larger numbers of patches in bulk, where you do not want the scene filled up. A detailed run log `o<patch>.log` and a report `o<patch>_report.json` are written next to the files.
+
+  A finished patch is loaded from the files with the **Import Patch** button in *Patch Selection* — from the OBJ, or (with `Import C3D` checked) from the `.c3d` in `Working/Autogen/C3D`.
+- **A new `Import C3D` checkbox** in *Patch Selection*, above the Single Patch toggle and valid for a single patch and a range alike. With it on, *Import Patch* reads the buildings from a finished `o<patch>.c3d` in `Working/Autogen/C3D` (both LODs at once from a merged file); the plugin converts it itself and removes the helper files right after the import. Off, the import comes from the OBJ as before.
+- **The plugin ships its own certificate bundle.** `certs/cacert.pem` now comes with the add-on and every download goes through it, which fixes the `certificate has expired` error that stopped OSM downloads working at all on machines whose Windows root certificates were out of date. The sources are tried in order:
+
+  | order | source |
+  |---|---|
+  | 1 | `certs/cacert.pem` shipped with the plugin |
+  | 2 | the certificate list that comes with Blender (certifi) |
+  | 3 | the Windows system store |
+
+  Nothing breaks if the file is missing — the next source is used. New removable module `blender/ssl_context.py`.
+- **Tree rows and fences are downloaded together with the buildings.** They used to be asked for in a separate query after the buildings, so an overloaded server left a patch with its buildings but without its trees. One query now covers everything: a patch is either complete or not downloaded at all.
+- **A more resilient download.** A fourth fallback server was added and the servers are ordered by power (strongest first); the plugin remembers the one that answered last and starts there; each patch gets **six attempts instead of three** with a growing wait between them (3, 8, 15, 25 s, longer still on a rate limit). At the end of a run a **NOT DOWNLOADED** summary lists what could not be fetched — in the console, in Blender's status bar and in `generate_log.txt`.
+- **Terrain already in the scene stays where it is.** When the terrain is already imported in Blender and the `terrain` checkbox is on, importing a patch only loads the autogen — the buildings and the other objects. The terrain is not loaded again.
 
 **New in v0.9.17 — fences:**
 - **A new “Fence” block in “Other objects”** builds a fence wherever OSM has a linear feature (way) tagged `barrier=fence`. Only ways are read. A fence tagged on a node is not built — a node itself has nothing to build, and `barrier=fence` there represents a point feature rather than the course of a fence. The new module can be removed: `blender/fences.py`.
@@ -246,6 +269,7 @@ Place these files in your `--patch-dir`:
 | `o{patch_id}_LOD1.obj` | Simplified mesh without overhang |
 | `o{patch_id}_report.json` | Processing statistics |
 | `o{patch_id}.log` | Detailed processing log |
+| `C3D/o{patch_id}.c3d` | Condor `.c3d`, from **Export C3D** or the **Save as C3D** checkbox (one merged file holds both LODs) |
 
 ---
 
@@ -256,6 +280,7 @@ Place these files in your `--patch-dir`:
 - **Terrain integration**: Floor Z computed from terrain mesh intersection
 - **UV mapping**: Full texture atlas support (6 roof patterns, 12 facade styles)
 - **Two LOD levels**: LOD0 (detailed) and LOD1 (simplified)
+- **Condor `.c3d` output**: export or generate straight into `Working/Autogen/C3D`, and import a finished `.c3d` back
 - **Deterministic output**: Same seed produces identical results
 - **Blender integration**: Import buildings directly into Blender (v0.5.0+ with Condor workflow support)
 - **Zero dependencies**: Uses only Python standard library (works anywhere)
@@ -328,6 +353,8 @@ condor_buildings/
 │   ├── panels.py            # UI panels (sidebar)
 │   ├── mesh_converter.py    # MeshData → Blender mesh conversion
 │   ├── osm_downloader.py    # Download OSM/aeroway data from Overpass API
+│   ├── ssl_context.py       # HTTPS certificates for all downloads (certs/cacert.pem first)
+│   ├── convert_c3d.py       # OBJ+MTL <-> Condor .c3d conversion (Export C3D / Import C3D)
 │   ├── batch_processing.py  # File-mode / batch export via Blender, chimneys, run logs
 │   ├── msprint.py           # Merge Microsoft Buildings footprints into the OSM data
 │   ├── transmitters.py      # Transmitter / mast module (man_made=mast/tower)
@@ -373,6 +400,8 @@ condor_buildings/
 │   ├── math_utils.py        # Mathematical utilities
 │   ├── triangulation.py     # Polygon triangulation (ear clipping)
 │   └── polygon_utils.py     # Polygon utilities (area, collinear removal)
+├── certs/                   # HTTPS root certificates shipped with the addon
+│   └── cacert.pem           # Used by every download; swap for a newer bundle when needed
 ├── Textures/                # Main wall/roof atlases, copied to Working/Autogen/Textures on generation
 │   ├── Houses_Atlas.dds
 │   ├── Highrise_Atlas.dds
@@ -1542,6 +1571,7 @@ Condor 3D (x, y, z)
 
 | 0.9.15 | Aug 23, 2026 | **Tree rows** — a new removable module `blender/tree_rows.py` plants trees from every OSM tagging of a line of trees, on ways and on nodes alike. The tags it reads are natural=tree_row, barrier=hedge, natural=hedge, barrier=hedge_bank, fence_type=hedge, tree_lined on a road or waterway (flat, namespaced tree_lined:left / :right / :both, denotation=avenue, deprecated alley=left/right/both) and natural=tree for a single tree; the values "no" and "separate" are skipped so nothing is built twice. The buildings query is **untouched** — the tags are pulled on demand by one small Overpass query per patch and merged into the existing `map_<patch>.osm` (temp file + versioned marker). Four categories, one object each (`tree_rows_1_alley`, `_2_hedge`, `_3_roadside`, `_4_solitary`), each with its own model in `assets/3Dobjects` on the shared `tree_rows.dds`; models keep their real size (random shrink ≤25 %, `height` scales them), and a missing model falls back to a crossed billboard. Spacing moved into the **add-on preferences** (Trees 10–30 m default 20, Hedges 5–10 m default 8) so it survives every .blend, hedge bushes are widened to span the spacing for a continuous strip, and moving a slider rebuilds the scene. Trees never stand in water (alpha of `t<patch>.dds`, `width` sets the offset); solitary trees keep a whole crown apart. **Merge** joins a patch into one `tree_rows` with the `condor_tree` material, **Batch** writes that merged block into `o<patch>.obj` directly. Optional **Copernicus Small Woody Features** layer (off by default, `blender/tree_rows_copernicus.py`): one cached image per patch, narrow strips kept and solid blocks dropped, Europe only |
 | 0.9.17 | Sep 1, 2026 | **Fences** — a new removable module `blender/fences.py` builds a fence from every OSM line tagged `barrier=fence` (ways only; `area=yes` is an outline, not a fence). A post stands at **every corner** and the stretches between them are filled at **4 m** with no gap ever longer than that: the number of gaps is rounded up and the remainder shared equally between the two end gaps, so 10 m comes out as 3 + 4 + 3 and 14 m as 3 + 4 + 4 + 3, worked out per segment so a corner is never doubled and no stub is left. The post is the model `assets/pylons/fence_post.obj` (triangular, 0.16 m across, 1.30 m up and 1 m sunk, so no hole shows on a slope) — redraw that one file to change its shape. **Two sagless wires**, the top 0.10 m under the head of the post and the lower 0.60 m below it, run THROUGH the posts and are jointed **only where the fence really bends**, in plan or in height, so a straight flat run is one unbroken wire; post and wires are smooth-shaded and the normals are written into the OBJ. The **`pylones` material / `Pylons.dds`** is shared with the powerlines and aerialways — the post uses the wooden strip, the wire the dark grey block at the top — so no new texture is needed. **One fence = one object** `fence`, **Merge** joins a patch. A fence crossing a patch border gets **one post just beyond the edge, at the NEIGHBOUR's terrain height**, recorded in `Working/Autogen/fences_border.txt` in the neighbour's own coordinates, so the neighbour finds it standing, skips it and only strings the wire to it — all four sides at once, any build order, nothing built twice. `barrier=fence` stays **out of the main query** and is fetched per patch on demand, a patch with none marked so it is not asked again. Spacing slider **Posts** (2–8 m, default 4) in the add-on preferences **Fences are never built into LOD1** - with LOD1 alone selected Import only reports `Barrier fences are not created in LOD1` and stops without downloading anything; file mode writes them into `o<patch>.obj` and skips `o<patch>_LOD1.obj` **After Merge the fence becomes part of `pylones`** - it shares the material and the texture with the powerlines and the aerialways, so it is joined into that object, and in a patch without powerlines the merged fence is named `pylones` anyway; file mode appends it to the `pylones` block, which the exporter always writes last |
+| 0.9.18 | Sep 1, 2026 | **Condor `.c3d` output and imports.** The export button is split into **Export OBJ** (unchanged, Condor-ready OBJ+MTL into `Working/Autogen`) and **Export C3D** (into the new `Working/Autogen/C3D`, converted to `.c3d` with the helper OBJ+MTL deleted afterwards; *Both LODs* produces one merged `.c3d` holding both). A new **`Save as C3D` / `Save as OBJ`** checkbox in *Output* makes the generation itself write `.c3d` into `Working/Autogen/C3D` instead of OBJ+MTL into `Working/Autogen` — in **Batch download** mode and with **Batch processing** alike, the run log and reports staying in `Working/Autogen`. The mode checkbox is now **named after its state**: **Import to Blender** when checked, **Batch download** when not. A new **`Import C3D`** checkbox in *Patch Selection* (above the Single Patch toggle, valid for one patch and for a range) makes *Import Patch* read a finished `o<patch>.c3d` from `Working/Autogen/C3D` — both LODs at once from a merged file — converting it on the fly and deleting the helper files after the import (`blender/convert_c3d.py`). **Own certificate bundle**: `certs/cacert.pem` ships with the add-on and every download goes through it (`blender/ssl_context.py`), fixing the `certificate has expired` failure caused by outdated Windows root certificates; certifi and the system store remain as fallbacks. **Tree rows and fences are fetched in the SAME query as the buildings**, so an overloaded server can no longer leave a patch with buildings but no trees. **Download resilience**: a fourth fallback server, servers ordered by power, the last working one remembered, **six attempts instead of three** with growing waits (3/8/15/25 s, longer on a rate limit) and a **NOT DOWNLOADED** summary at the end of a run — console, status bar and `generate_log.txt`. **Import placement fixed**: terrain already in the scene is not offset a second time, so it no longer jumps one tile aside |
 | 0.9.14 | Aug 21, 2026 | **The `building` tag's VALUE is finally checked** (`io/osm_parser.py`, both the way pass and the multipolygon pass): the test used to be `if 'building' not in tags`, so `building=no` passed exactly like `building=yes` - way 75656944 near Weston-super-Mare, a coastal staircase (`highway=steps`) tagged `building=no`, was generated as a flat-roofed house following the zig-zag of the steps. Two sets now gate it: `NOT_A_BUILDING = {no, ruins, roof, bridge, construction}` and `NOT_A_BUILDING_AMENITY = {shelter}`, the latter for structures tagged `building=yes` that another tag gives away. Measured on patch 055026: 15045 -> 15018 buildings, everything else untouched |
 
 ### Changelog Files
