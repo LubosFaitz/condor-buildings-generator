@@ -333,6 +333,7 @@ def _convex_hull(pts):
 def _fetch_solar_osm(meta):
     import urllib.request
     import urllib.parse
+    from .ssl_context import urlopen_ssl
     bbox = f"{meta.lat_min},{meta.lon_min},{meta.lat_max},{meta.lon_max}"
     q = ("[out:xml][timeout:60];\n(\n"
          f'way["power"="plant"]["plant:source"="solar"]({bbox});\n'
@@ -346,7 +347,7 @@ def _fetch_solar_osm(meta):
         try:
             req = urllib.request.Request(server, data=data,
                                          headers={"User-Agent": "condor-solar"})
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with urlopen_ssl(req, timeout=60) as r:
                 return ET.fromstring(r.read())
         except Exception as e:
             _log(f"Overpass failed: {e}")
@@ -465,6 +466,7 @@ def _esri_luma(poly, meta, cache_dir, sat_path=None):
     (a saved esri_sat.jpg) exists and matches, it's used and NO tiles are downloaded/needed;
     otherwise the ESRI World Imagery tiles are downloaded into cache_dir and stitched."""
     import urllib.request
+    from .ssl_context import urlopen_ssl
     os.makedirs(cache_dir, exist_ok=True)
     z = ESRI_ZOOM
     xs = [p[0] for p in poly]; ys = [p[1] for p in poly]
@@ -498,7 +500,7 @@ def _esri_luma(poly, meta, cache_dir, sat_path=None):
                 try:
                     req = urllib.request.Request(ESRI_URL.format(z=z, x=tx, y=ty),
                                                  headers={"User-Agent": "condor-solar"})
-                    with urllib.request.urlopen(req, timeout=30) as r:
+                    with urlopen_ssl(req, timeout=30) as r:
                         open(fn, "wb").write(r.read())
                 except Exception as e:
                     _log(f"tile {tx},{ty} failed: {e}")

@@ -48,6 +48,9 @@ class CONDOR_PT_main_panel(Panel):
         box = layout.box()
         box.label(text="Patch Selection", icon='GRID')
 
+        # Import C3D option (label only for now, not connected to the import yet)
+        box.prop(props, "import_c3d", text="Import C3D")
+
         # Toggle between single patch and range
         row = box.row(align=True)
         row.prop(props, "single_patch_mode", text="Single Patch", toggle=True)
@@ -110,7 +113,20 @@ class CONDOR_PT_main_panel(Panel):
         col = box.column(align=True)
         col.prop(props, "output_lod", text="")
         col.prop(props, "save_to_autogen")
-        col.prop(props, "import_to_blender")
+        # Label follows the mode: when unchecked, buildings are written straight
+        # to OBJ files (batch download) without being loaded into Blender.
+        col.prop(
+            props,
+            "import_to_blender",
+            text="Import to Blender" if props.import_to_blender else "Batch download",
+        )
+        # Label follows the mode as well. Not wired to the export yet -
+        # label only for now, the functionality will be added later.
+        col.prop(
+            props,
+            "save_as_c3d",
+            text="Save as C3D" if props.save_as_c3d else "Save as OBJ",
+        )
 
         # --- Powerlines (optional extra object) ---
         box = layout.box()
@@ -229,7 +245,8 @@ class CONDOR_PT_main_panel(Panel):
         row_exp.scale_y = 1.5
         sub_exp = row_exp.row(align=True)
         sub_exp.enabled = can_import and not props.is_processing
-        sub_exp.operator("condor.export_condor", text="Export Condor OBJ+MTL", icon='EXPORT')
+        sub_exp.operator("condor.export_condor", text="Export OBJ", icon='EXPORT')
+        sub_exp.operator("condor.export_c3d", text="Export C3D", icon='EXPORT')
         layout.label(text="Condor-ready: triangulated, axis-corrected, .mtl included", icon='CHECKMARK')
 
         # --- Statistics (after import) ---

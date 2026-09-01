@@ -1,6 +1,8 @@
 # Condor Buildings Generator — Complete Manual
 
-Plugin for Blender that generates 3D buildings for the Condor flight simulator. Building data is sourced from OpenStreetMap; terrain comes from Condor's heightmap files. The resulting OBJ/MTL files are written directly to Working/Autogen.
+Plugin for Blender that generates 3D buildings for the Condor flight simulator. Building data is sourced from OpenStreetMap; terrain comes from Condor's heightmap files. The resulting OBJ/MTL files are written directly to Working/Autogen — or straight as finished `.c3d` files into Working/Autogen/C3D.
+
+**Version 0.9.18**
 
 ---
 
@@ -67,6 +69,15 @@ If the path is empty or no landscape is selected, a red error icon with an error
 
 A patch is a square tile of landscape in Condor. A patch ID is a six-digit number in the format `XXXYYY` (first three digits = X coordinate, next three = Y coordinate), for example `035023`.
 
+### Import C3D checkbox
+
+At the very top of the box, above the Single Patch toggle. It applies to a single patch and to a range alike.
+
+- **Unchecked (default)** — *Import Patch* reads the buildings from the OBJ files in `Working/Autogen`, exactly as before.
+- **Checked** — *Import Patch* reads the buildings from the finished `o<patch>.c3d` in `Working/Autogen/C3D`. The plugin converts the file back to OBJ by itself, imports it and deletes the helper files right after — nothing is left behind on disk. When the `.c3d` holds LOD0 and LOD1 merged together, both are imported at once into their own collections.
+
+If `o<patch>.c3d` is not in the `C3D` folder, the import says so (`File o<patch>.c3d not found in Working/Autogen/C3D/`) and skips the patch.
+
 ### Single Patch toggle
 
 Switches between two patch input modes.
@@ -129,7 +140,9 @@ Searches for building files in `Working/Autogen/`:
 
 If neither file exists → the viewport is set up and a warning is shown. The operation ends.
 
-Each imported OBJ goes into its own collection. If the collection does not exist yet, it is created. OBJ is imported with axes **`forward=X, up=Z` always** (the OBJ header is ignored) — matching Export Condor OBJ+MTL (which bakes the Condor axis swap) and OBJs converted from `.c3d` in an external editor (which don't write a header).
+With **Import C3D** checked, the buildings come from `Working/Autogen/C3D/o{patch_id}.c3d` instead of the OBJ — the plugin converts it, imports it and removes the helper files immediately (see above).
+
+Each imported OBJ goes into its own collection. If the collection does not exist yet, it is created. OBJ is imported with axes **`forward=X, up=Z` always** (the OBJ header is ignored) — matching Export OBJ (which bakes the Condor axis swap) and OBJs converted from `.c3d` (which don't write a header).
 
 **No duplicate import:** if the patch's building collection already has buildings, that LOD is skipped (no re-import). Bridges/chimneys/transmitters baked into the OBJ that you already imported separately are dropped after import, so each stays once. LOD0 and LOD1 are treated as separate.
 
@@ -205,6 +218,8 @@ Imports building OBJ files and optionally terrain for all patches in the specifi
 
    If no file exists → terrain for this patch is skipped; building import continues.
 
+   **When the terrain is already imported in Blender:** it is not loaded again, even with `terrain` checked — it stays where it is, and importing the patch only adds the autogen (the buildings and the other objects).
+
 2. **Import building OBJ files**
 
    Searches in `Working/Autogen/`:
@@ -252,6 +267,33 @@ Selects the source of building data:
 
 - **Download from Overpass** — downloads data from the internet via the Overpass API (OpenStreetMap). Downloaded data is saved as `map_{patch_id}.osm` in the Working folder. On subsequent runs this file is used if it exists.
 - **Local OSM File** — uses an existing `map_{patch_id}.osm` file from the Working folder. Useful for repeated generation without internet access.
+
+### Downloading from the internet — certificates
+
+The plugin now **carries its own certificate bundle** — the file `certs/cacert.pem` inside the plugin folder — and uses it for **every** download from the internet.
+
+This fixes the `certificate has expired` error that stopped OSM downloads from working at all on some computers. The servers were never the problem: it was the **outdated root certificates in Windows**. On a machine that had not been updated for a long time Python simply refused the connection, even though everything else was in order.
+
+Certificates are looked for in this order:
+
+1. `certs/cacert.pem` shipped with the plugin
+2. the certificate list that comes with Blender (certifi)
+3. the Windows system store
+
+If the file were missing or damaged, the plugin moves on to the next source by itself and the download is not interrupted. The bundle can be swapped for a newer one every once in a while — it is an ordinary text file and nothing else has to change with it.
+
+### Tree rows and fences are downloaded together with the buildings
+
+Tree rows and fences used to be asked for in a **separate query, after the buildings**. Whenever the server was struggling at that moment, the patch ended up with its buildings but without its trees — and nothing said so.
+
+The plugin now asks for everything in **one query**, so a patch is either complete or not downloaded at all.
+
+### A more resilient download
+
+- A **fourth fallback server** was added, and the servers are ordered **by power** (the strongest first), so a big query has the best chance of getting through.
+- The plugin **remembers the server that answered last** and starts the next query there, instead of always hammering the first one in the list.
+- Each patch gets **six attempts instead of three** (so each of the four servers is tried twice), and the **wait between attempts grows** (3, 8, 15 and 25 seconds). When a server explicitly asks to be left alone (rate limit), the wait is longer still.
+- At the end of a generation run a **NOT DOWNLOADED** summary lists everything that could not be fetched (the patch and what is missing from it). It appears **in the console**, **in Blender's status bar** and in `generate_log.txt` (as a clearly marked block listing the patches).
 
 ### What the plugin does not treat as a building
 
@@ -313,15 +355,28 @@ Determines which detail levels are generated:
 ### Save to Autogen
 Saves the generated OBJ and MTL files to `Working/Autogen/`. Enabled by default. If disabled, files are not written to disk — they are only displayed in Blender.
 
-### Import to Blender
-After generation, imports the resulting files into the Blender viewport. Enabled by default.
+### Import to Blender / Batch download
+The checkbox is **named after the mode it is in**, and it decides whether you see the result in the scene straight away or whether it ends up only as files on disk. Enabled by default.
 
-**When disabled (file mode):** buildings are not shown in Blender, but written straight to disk as files **ready for Condor** — just like the Export Condor OBJ+MTL button:
+**Checked ("Import to Blender")** — the generated buildings are loaded straight into Blender, into the collections `Condor_{landscape}_{patch_id}` (and `…_LOD1`), so you can look at them and edit them. With `terrain` checked as well, the terrain of the patch is imported along with them; and when the terrain is already imported in Blender, it is not loaded again — it stays where it is and only the autogen is added.
+
+**Unchecked ("Batch download", formerly "file mode")** — nothing is loaded into Blender. The buildings are written straight out as files into `Working/Autogen` (or as `.c3d` into `Working/Autogen/C3D` when `Save as C3D` is checked) — files **ready for Condor**, just like the Export OBJ button. It is the mode for processing larger numbers of patches in bulk, where you do not want the scene filled up:
 - an `o{patch_id}.mtl` is always written next to `o{patch_id}.obj` (materials and textures from the internal TEXTURE_MAP)
 - roofs are produced correctly — gabled roofs doubled for double-sided display, hipped roofs with correct normals
 - wind turbines are automatically rotated by one random angle around their own axis, merged into a single object and added to the OBJ; the angle is **the same for LOD0 and LOD1** of the same patch
 - if Chimney **Batch** is checked in the *Other objects* section, chimneys are added to the OBJ as well (see below)
 - the textures of the generated objects are copied to `Working/Autogen/Textures/` in file mode too — the building atlases and roofs, plus **`Pylons.dds`** (pylons/lines/aerialways) and **`WindTurbine.dds`** (turbines)
+- a detailed run log `o{patch_id}.log` and a report `o{patch_id}_report.json` are written next to the files
+
+**How to get to the result:** a finished patch is loaded from the files with the **Import Patch** button in the *Patch Selection* section — from the OBJ, or (with `Import C3D` checked) from the `.c3d` in `Working/Autogen/C3D`.
+
+### Save as C3D / Save as OBJ
+The last checkbox in the box. It is **named after its own state** as well, and it decides in which format the generation saves its result.
+
+- **Unchecked (default, "Save as OBJ")** — OBJ+MTL are written to `Working/Autogen`, exactly as before.
+- **Checked ("Save as C3D")** — the generation writes into the new `Working/Autogen/C3D` folder and converts the finished files into Condor's `.c3d` format; the helper OBJ and MTL are removed from that folder. With *Both LODs* one merged `.c3d` containing both LODs is produced.
+
+It works both in **Batch download** mode (Import to Blender unchecked) and with **Batch processing** switched on. The run log (`generate_log.txt`) and the reports stay in `Working/Autogen`.
 
 ---
 
@@ -489,9 +544,13 @@ Because the code calculates facade V coordinates the same way for both atlases (
 
 ---
 
-## Export Condor OBJ+MTL button
+## Export OBJ and Export C3D buttons
 
-Exports generated buildings from the scene to OBJ+MTL files ready for use directly in Condor. Works in both single patch and range mode.
+The former single *Export Condor OBJ+MTL* button is now **split into two**, side by side in one row.
+
+### Export OBJ
+
+Does exactly what the old button did: exports generated buildings from the scene to OBJ+MTL files ready for use directly in Condor, written to `Working/Autogen`. Works in both single patch and range mode.
 
 **Steps for each patch:**
 
@@ -526,6 +585,12 @@ Exports generated buildings from the scene to OBJ+MTL files ready for use direct
 - `Working/Autogen/o{patch_id}_LOD1.obj` + `o{patch_id}_LOD1.mtl` (LOD1)
 
 At the end, displays the number of exported files, patch count, and elapsed time.
+
+### Export C3D
+
+Exports the same thing, but into the new `Working/Autogen/C3D` folder, and converts the finished files straight into Condor's `.c3d` format. The helper OBJ and MTL are deleted from that folder after the conversion — only the `.c3d` files are left there.
+
+With **Both LODs** selected, LOD0 and LOD1 are joined into **one merged `.c3d`** holding both LODs (named after the LOD0 file). At the end it reports how many `.c3d` files were produced from how many patches.
 
 ---
 

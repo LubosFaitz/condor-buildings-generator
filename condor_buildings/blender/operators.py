@@ -234,6 +234,47 @@ def _extra_obj_type(name):
     return None
 
 
+def _remove_c3d_temp(files):
+    """Delete the temporary OBJ/MTL files produced by an Import C3D conversion."""
+    for path in files:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
+
+
+def _c3d_to_temp_obj(paths, patch_id):
+    """Import C3D: convert Working/Autogen/C3D/o<patch>.c3d back into OBJ.
+
+    The OBJ + MTL are written into Working/Autogen - the same folder a normal export
+    uses - so the textures are found exactly like with a normally generated OBJ. A
+    temporary file name is used, so an o<patch>.obj already sitting there (from a
+    normal generation) is never overwritten and never deleted.
+
+    Returns (lod0_path, lod1_path, created_files). The returned paths simply do not
+    exist when the c3d is missing, or when the c3d holds no LOD1 part."""
+    from .convert_c3d import convert_c3d_to_obj, default_cfg
+
+    base = os.path.join(paths['autogen'], f"_c3dimport_o{patch_id}")
+    lod0_path = base + ".obj"
+    lod1_path = base + "_LOD1.obj"
+    candidates = (lod0_path, base + ".mtl", lod1_path, base + "_LOD1.mtl")
+
+    c3d_path = os.path.join(paths['autogen'], "C3D", f"o{patch_id}.c3d")
+    if not os.path.exists(c3d_path):
+        return lod0_path, lod1_path, []
+
+    _remove_c3d_temp(candidates)          # leftovers from an interrupted run
+    try:
+        # a merged c3d (LOD0 + LOD1) produces both obj files at once
+        convert_c3d_to_obj(c3d_path, lod0_path, default_cfg())
+    except Exception:
+        _remove_c3d_temp(candidates)      # never leave half-written files behind
+        raise
+    return lod0_path, lod1_path, [p for p in candidates if os.path.exists(p)]
+
+
 def resolve_patch_files(patch_id, paths):
     """Find h*.txt and h*.obj for a patch. Returns (txt, obj) or (None, None)."""
     heightmaps_dir = paths['heightmaps']
@@ -560,6 +601,17 @@ class CONDOR_OT_import_buildings(Operator):
         total_objects = []
         patches_processed = 0
         errors = []
+        # Patches whose OSM data could not be downloaded (every Overpass server
+        # failed). Collected so the end of the run can list them clearly instead
+        # of hiding a single warning in the middle of the output.
+        failed_downloads = []
+        # Side queries (tree rows, fences, bridges, airports) record their own
+        # failures there; clear them so this run does not report the previous one's.
+        try:
+            from . import osm_downloader as _osm_dl
+            _osm_dl.clear_failed()
+        except Exception:
+            pass
         total_ms_added = 0
 
         props.is_processing = True
@@ -700,6 +752,9 @@ class CONDOR_OT_import_buildings(Operator):
 
                     if not download_result.success:
                         errors.append(f"Patch {patch_id}: OSM download failed: {download_result.error}")
+                        failed_downloads.append(patch_id)
+                        print(f"[Condor] OSM download FAILED for patch {patch_id}: "
+                              f"{download_result.error}")
                         continue
 
                     osm_path = download_result.filepath
@@ -1006,14 +1061,24 @@ class CONDOR_OT_import_buildings(Operator):
                 except Exception as e:
                     print(f"[Condor] run log collect failed: {e}")
 
-            # Write the run log: summary on top, then each collected block.
+            # Write the run log: summary on top, then each collected block, and
+            # finally the list of patches that could not be downloaded.
             try:
-                from .batch_processing import write_run_summary, append_run_log
+                from .batch_processing import (write_run_summary, append_run_log,
+                                               append_failed_patches)
                 if run_blocks:
                     write_run_summary(paths['autogen'], run_n_lod0,
                                       run_n_lod0, run_n_lod1, run_total_ms)
                     for (hdr, ms, objs, airs) in run_blocks:
                         append_run_log(paths['autogen'], hdr, ms, objs, airs)
+                try:
+                    from . import osm_downloader as _osm_dl
+                    _extras = _osm_dl.failed_downloads()
+                except Exception:
+                    _extras = []
+                append_failed_patches(
+                    paths['autogen'],
+                    [f"{pid}: buildings OSM" for pid in failed_downloads] + _extras)
             except Exception as e:
                 print(f"[Condor] run log write failed: {e}")
 
@@ -1041,6 +1106,30 @@ class CONDOR_OT_import_buildings(Operator):
             if len(errors) > 5:
                 self.report({'WARNING'}, f"... and {len(errors) - 5} more errors")
 
+        # Summary of the patches that could NOT be downloaded. A single warning in
+        # the middle of the output is easy to miss, so list them all together at
+        # the very end - in the console and in the Info log.
+        failed_msg = ""
+        # The side data (tree rows, fences, bridges, airports) is downloaded by its
+        # own queries, which used to fail silently - a patch could end up without its
+        # trees and nothing said so. They are listed here together with the patches
+        # whose whole OSM download failed.
+        try:
+            from . import osm_downloader as _osm_dl
+            failed_extras = _osm_dl.failed_downloads()
+        except Exception:
+            failed_extras = []
+        if failed_downloads or failed_extras:
+            failed_all = [f"{pid}: buildings OSM" for pid in failed_downloads] + failed_extras
+            failed_list = ", ".join(failed_all)
+            failed_msg = f" | NOT downloaded: {failed_list}"
+            print("[Condor] " + "!" * 50)
+            print(f"[Condor] NOT DOWNLOADED: {len(failed_all)}")
+            for item in failed_all:
+                print(f"[Condor]   {item}")
+            print("[Condor] " + "!" * 50)
+            self.report({'WARNING'}, f"NOT downloaded: {failed_list}")
+
         if patches_processed > 0:
             # Check texture status for diagnostics
             tex_ok = sum(1 for m in bpy.data.materials if m.name.startswith("condor_") and m.node_tree and any(n.type == 'TEX_IMAGE' and n.image for n in m.node_tree.nodes))
@@ -1051,7 +1140,7 @@ class CONDOR_OT_import_buildings(Operator):
 
             self.report(
                 {'INFO'},
-                f"Generated {total_buildings} objects from {patches_processed} patches in {elapsed_ms}ms{tex_msg}"
+                f"Generated {total_buildings} objects from {patches_processed} patches in {elapsed_ms}ms{tex_msg}{failed_msg}"
             )
 
             # --- POSITION PATCHES (only when terrain checkbox is on) ---
@@ -1176,11 +1265,153 @@ class CONDOR_OT_clear_buildings(Operator):
         return {'FINISHED'}
 
 
+class _ExportAbort(Exception):
+    """Export could not start at all (bad paths, no patches, missing modules)."""
+    pass
+
+
+def _export_condor_obj_files(op, context, out_dir):
+    """Export Condor-ready OBJ+MTL for the selected patch(es) into out_dir.
+    Returns (files_written, patches_exported, errors, elapsed_ms)."""
+    import time
+    import shutil
+
+    try:
+        from ..config import build_texture_map, CONDOR_AXIS_SWAP, CONDOR_EXPORT_TRIANGULATE, CONDOR_EXPORT_NORMALS
+        from ..io.obj_exporter import export_condor_obj_mtl
+        from ..generators.powerlines import pylon_texture_path
+        from .mesh_converter import blender_obj_to_meshdata
+    except ImportError as e:
+        raise _ExportAbort(f"Failed to import modules: {e}")
+
+    props = context.scene.condor_buildings
+
+    paths = resolve_condor_paths(props)
+    if not paths:
+        raise _ExportAbort(f"Invalid Condor folder structure for landscape: {props.landscape_name}")
+
+    patch_ids = resolve_patch_list(props)
+    if not patch_ids:
+        raise _ExportAbort("No patches to process")
+
+    start_time = time.time()
+    files_written = []
+    patches_exported = 0
+    errors = []
+
+    for patch_id in patch_ids:
+        # LOD0: collection Condor_{landscape}_{patch}
+        # LOD1: collection Condor_{landscape}_{patch}_LOD1
+        lods = []
+        if props.output_lod in ('LOD0', 'BOTH'):
+            col_name = f"Condor_{props.landscape_name}_{patch_id}"
+            col = bpy.data.collections.get(col_name)
+            if col:
+                lods.append(("LOD0", col))
+            else:
+                errors.append(f"Patch {patch_id}: collection '{col_name}' does not exist — run Generate Buildings first")
+        if props.output_lod in ('LOD1', 'BOTH'):
+            col_name_lod1 = f"Condor_{props.landscape_name}_{patch_id}_LOD1"
+            col1 = bpy.data.collections.get(col_name_lod1)
+            if col1:
+                lods.append(("LOD1", col1))
+            elif props.output_lod == 'LOD1':
+                errors.append(f"Patch {patch_id}: collection '{col_name_lod1}' does not exist — run Generate Buildings first")
+
+        if not lods:
+            continue
+
+        tex_map = build_texture_map(patch_id, props.flat_roof_terrain_photo)
+        condor_tex_map = dict(tex_map)
+        if props.flat_roof_terrain_photo and 'flat_roof' in condor_tex_map:
+            condor_tex_map['flat_roof'] = "T_" + condor_tex_map['flat_roof']
+
+        # Move objects to origin before export if patches are offset
+        saved_locations = {}
+        mesh_objs = [o for o in lods[0][1].objects if o.type == 'MESH']
+        need_restore = not props.single_patch_mode and props.import_patch_terrain and mesh_objs
+        if need_restore:
+            bpy.ops.object.select_all(action='DESELECT')
+            for obj in mesh_objs:
+                saved_locations[obj.name] = obj.location.copy()
+                obj.location = (0.0, 0.0, 0.0)
+                obj.select_set(True)
+            context.view_layer.objects.active = mesh_objs[0]
+            bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+        for lod_name, col in lods:
+            groups = {}
+            for obj in col.objects:
+                if obj.type != 'MESH':
+                    continue
+                md = blender_obj_to_meshdata(obj, osm_id=obj.name)
+                if md and not md.is_empty():
+                    import re as _re
+                    group_name = _re.sub(r'\.\d+$', '', obj.name)
+                    groups[group_name] = md
+                    if group_name not in condor_tex_map and obj.material_slots:
+                        mat = obj.material_slots[0].material
+                        if mat and mat.use_nodes and mat.node_tree:
+                            for node in mat.node_tree.nodes:
+                                if node.type == 'TEX_IMAGE' and node.image:
+                                    img = node.image
+                                    tex_name = os.path.basename(bpy.path.abspath(img.filepath)) if img.filepath else img.name
+                                    if tex_name:
+                                        condor_tex_map[group_name] = tex_name
+                                    break
+
+            if not groups:
+                errors.append(f"Patch {patch_id} {lod_name}: collection has no mesh objects")
+                continue
+
+            suffix = "" if lod_name == "LOD0" else f"_{lod_name}"
+            fname = f"o{patch_id}{suffix}.obj"
+            out_obj = os.path.join(out_dir, fname)
+            try:
+                export_condor_obj_mtl(
+                    groups, out_obj, condor_tex_map,
+                    comment=f"{lod_name} - Patch {patch_id} (Condor-ready)",
+                    axis_swap=CONDOR_AXIS_SWAP,
+                    triangulate=CONDOR_EXPORT_TRIANGULATE,
+                    include_normals=CONDOR_EXPORT_NORMALS,
+                )
+                files_written.append(out_obj)
+            except Exception as e:
+                errors.append(f"Patch {patch_id} {lod_name}: export failed: {e}")
+
+        # Restore locations after export
+        if need_restore:
+            for obj in mesh_objs:
+                if obj.name in saved_locations:
+                    obj.location = saved_locations[obj.name]
+
+        if props.generate_powerlines:
+            src_tex = pylon_texture_path()
+            if src_tex:
+                # textures always go to Working/Autogen/Textures - the c3d refers to Textures\...
+                tex_out_dir = os.path.join(paths['autogen'], "Textures")
+                os.makedirs(tex_out_dir, exist_ok=True)
+                dst_tex = os.path.join(tex_out_dir, os.path.basename(src_tex))
+                if not os.path.exists(dst_tex):
+                    try:
+                        shutil.copy2(src_tex, dst_tex)
+                    except Exception as e:
+                        errors.append(f"Patch {patch_id}: could not copy Pylons.dds: {e}")
+
+        patches_exported += 1
+
+    elapsed_ms = int((time.time() - start_time) * 1000)
+    props.last_import_time_ms = elapsed_ms
+    props.last_patches_processed = patches_exported
+
+    return files_written, patches_exported, errors, elapsed_ms
+
+
 class CONDOR_OT_export_condor(Operator):
     """Export Condor-ready OBJ + MTL (triangulated, axis-corrected, materials)"""
 
     bl_idname = "condor.export_condor"
-    bl_label = "Export Condor OBJ+MTL"
+    bl_label = "Export OBJ"
     bl_description = (
         "Generate buildings and export Condor-ready OBJ + MTL to Working/Autogen. "
         "Files are triangulated, axis-corrected (Forward X / Up Z) and carry a .mtl "
@@ -1198,18 +1429,6 @@ class CONDOR_OT_export_condor(Operator):
         return props.patch_x_max >= props.patch_x_min
 
     def execute(self, context):
-        import time
-        import shutil
-
-        try:
-            from ..config import build_texture_map, CONDOR_AXIS_SWAP, CONDOR_EXPORT_TRIANGULATE, CONDOR_EXPORT_NORMALS
-            from ..io.obj_exporter import export_condor_obj_mtl
-            from ..generators.powerlines import pylon_texture_path
-            from .mesh_converter import blender_obj_to_meshdata
-        except ImportError as e:
-            self.report({'ERROR'}, f"Failed to import modules: {e}")
-            return {'CANCELLED'}
-
         props = context.scene.condor_buildings
 
         paths = resolve_condor_paths(props)
@@ -1217,119 +1436,12 @@ class CONDOR_OT_export_condor(Operator):
             self.report({'ERROR'}, f"Invalid Condor folder structure for landscape: {props.landscape_name}")
             return {'CANCELLED'}
 
-        patch_ids = resolve_patch_list(props)
-        if not patch_ids:
-            self.report({'ERROR'}, "No patches to process")
+        try:
+            files_written, patches_exported, errors, elapsed_ms = \
+                _export_condor_obj_files(self, context, paths['autogen'])
+        except _ExportAbort as e:
+            self.report({'ERROR'}, str(e))
             return {'CANCELLED'}
-
-        start_time = time.time()
-        files_written = []
-        patches_exported = 0
-        errors = []
-
-        for patch_id in patch_ids:
-            # LOD0: collection Condor_{landscape}_{patch}
-            # LOD1: collection Condor_{landscape}_{patch}_LOD1
-            lods = []
-            if props.output_lod in ('LOD0', 'BOTH'):
-                col_name = f"Condor_{props.landscape_name}_{patch_id}"
-                col = bpy.data.collections.get(col_name)
-                if col:
-                    lods.append(("LOD0", col))
-                else:
-                    errors.append(f"Patch {patch_id}: collection '{col_name}' does not exist — run Generate Buildings first")
-            if props.output_lod in ('LOD1', 'BOTH'):
-                col_name_lod1 = f"Condor_{props.landscape_name}_{patch_id}_LOD1"
-                col1 = bpy.data.collections.get(col_name_lod1)
-                if col1:
-                    lods.append(("LOD1", col1))
-                elif props.output_lod == 'LOD1':
-                    errors.append(f"Patch {patch_id}: collection '{col_name_lod1}' does not exist — run Generate Buildings first")
-
-            if not lods:
-                continue
-
-            tex_map = build_texture_map(patch_id, props.flat_roof_terrain_photo)
-            condor_tex_map = dict(tex_map)
-            if props.flat_roof_terrain_photo and 'flat_roof' in condor_tex_map:
-                condor_tex_map['flat_roof'] = "T_" + condor_tex_map['flat_roof']
-
-            # Move objects to origin before export if patches are offset
-            saved_locations = {}
-            mesh_objs = [o for o in lods[0][1].objects if o.type == 'MESH']
-            need_restore = not props.single_patch_mode and props.import_patch_terrain and mesh_objs
-            if need_restore:
-                bpy.ops.object.select_all(action='DESELECT')
-                for obj in mesh_objs:
-                    saved_locations[obj.name] = obj.location.copy()
-                    obj.location = (0.0, 0.0, 0.0)
-                    obj.select_set(True)
-                context.view_layer.objects.active = mesh_objs[0]
-                bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-
-            for lod_name, col in lods:
-                groups = {}
-                for obj in col.objects:
-                    if obj.type != 'MESH':
-                        continue
-                    md = blender_obj_to_meshdata(obj, osm_id=obj.name)
-                    if md and not md.is_empty():
-                        import re as _re
-                        group_name = _re.sub(r'\.\d+$', '', obj.name)
-                        groups[group_name] = md
-                        if group_name not in condor_tex_map and obj.material_slots:
-                            mat = obj.material_slots[0].material
-                            if mat and mat.use_nodes and mat.node_tree:
-                                for node in mat.node_tree.nodes:
-                                    if node.type == 'TEX_IMAGE' and node.image:
-                                        img = node.image
-                                        tex_name = os.path.basename(bpy.path.abspath(img.filepath)) if img.filepath else img.name
-                                        if tex_name:
-                                            condor_tex_map[group_name] = tex_name
-                                        break
-
-                if not groups:
-                    errors.append(f"Patch {patch_id} {lod_name}: collection has no mesh objects")
-                    continue
-
-                suffix = "" if lod_name == "LOD0" else f"_{lod_name}"
-                fname = f"o{patch_id}{suffix}.obj"
-                out_obj = os.path.join(paths['autogen'], fname)
-                try:
-                    export_condor_obj_mtl(
-                        groups, out_obj, condor_tex_map,
-                        comment=f"{lod_name} - Patch {patch_id} (Condor-ready)",
-                        axis_swap=CONDOR_AXIS_SWAP,
-                        triangulate=CONDOR_EXPORT_TRIANGULATE,
-                        include_normals=CONDOR_EXPORT_NORMALS,
-                    )
-                    files_written.append(out_obj)
-                except Exception as e:
-                    errors.append(f"Patch {patch_id} {lod_name}: export failed: {e}")
-
-            # Restore locations after export
-            if need_restore:
-                for obj in mesh_objs:
-                    if obj.name in saved_locations:
-                        obj.location = saved_locations[obj.name]
-
-            if props.generate_powerlines:
-                src_tex = pylon_texture_path()
-                if src_tex:
-                    tex_out_dir = os.path.join(paths['autogen'], "Textures")
-                    os.makedirs(tex_out_dir, exist_ok=True)
-                    dst_tex = os.path.join(tex_out_dir, os.path.basename(src_tex))
-                    if not os.path.exists(dst_tex):
-                        try:
-                            shutil.copy2(src_tex, dst_tex)
-                        except Exception as e:
-                            errors.append(f"Patch {patch_id}: could not copy Pylons.dds: {e}")
-
-            patches_exported += 1
-
-        elapsed_ms = int((time.time() - start_time) * 1000)
-        props.last_import_time_ms = elapsed_ms
-        props.last_patches_processed = patches_exported
 
         if errors:
             for error in errors[:5]:
@@ -1346,6 +1458,106 @@ class CONDOR_OT_export_condor(Operator):
             return {'FINISHED'}
         else:
             self.report({'ERROR'}, "No files were exported")
+            return {'CANCELLED'}
+
+
+class CONDOR_OT_export_c3d(Operator):
+    """Export Condor .c3d (OBJ+MTL are converted and then removed)"""
+
+    bl_idname = "condor.export_c3d"
+    bl_label = "Export C3D"
+    bl_description = (
+        "Generate Condor .c3d in Working/Autogen/C3D. The OBJ + MTL are exported into "
+        "that folder, converted to .c3d (LOD0 + LOD1 are merged into one file when Both "
+        "is selected) and then deleted"
+    )
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        props = context.scene.condor_buildings
+        if not props.condor_path or props.landscape_name == 'NONE':
+            return False
+        if props.single_patch_mode:
+            return bool(props.patch_id)
+        return props.patch_x_max >= props.patch_x_min
+
+    def execute(self, context):
+        from . import convert_c3d
+
+        props = context.scene.condor_buildings
+
+        paths = resolve_condor_paths(props)
+        if not paths:
+            self.report({'ERROR'}, f"Invalid Condor folder structure for landscape: {props.landscape_name}")
+            return {'CANCELLED'}
+
+        out_dir = os.path.join(paths['autogen'], "C3D")
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except Exception as e:
+            self.report({'ERROR'}, f"Could not create folder {out_dir}: {e}")
+            return {'CANCELLED'}
+
+        try:
+            files_written, patches_exported, errors, elapsed_ms = \
+                _export_condor_obj_files(self, context, out_dir)
+        except _ExportAbort as e:
+            self.report({'ERROR'}, str(e))
+            return {'CANCELLED'}
+
+        # group the exported obj by patch: o<patch>.obj = LOD0, o<patch>_LOD1.obj = LOD1
+        groups = {}
+        for src in files_written:
+            base = os.path.splitext(os.path.basename(src))[0]
+            is_lod1 = base.lower().endswith("_lod1")
+            key = base[:-5] if is_lod1 else base
+            groups.setdefault(key, {})["lod1" if is_lod1 else "lod0"] = src
+
+        cfg = convert_c3d.default_cfg()
+        c3d_written = []
+        for key in sorted(groups.keys()):
+            pair = groups[key]
+            used = []
+            try:
+                if "lod0" in pair and "lod1" in pair:
+                    dst = os.path.splitext(pair["lod0"])[0] + ".c3d"   # named after LOD0
+                    convert_c3d.convert_pair_to_c3d(pair["lod0"], pair["lod1"], dst, cfg)
+                    used = [pair["lod0"], pair["lod1"]]
+                else:
+                    src = pair.get("lod0") or pair.get("lod1")
+                    dst = os.path.splitext(src)[0] + ".c3d"
+                    convert_c3d.convert_obj_to_c3d(src, dst, cfg)
+                    used = [src]
+                c3d_written.append(dst)
+            except Exception as e:
+                errors.append(f"{key}: C3D conversion failed: {e}")
+                continue
+
+            # remove the helper obj + mtl that this export created
+            for obj_path in used:
+                for helper in (obj_path, os.path.splitext(obj_path)[0] + ".mtl"):
+                    try:
+                        if os.path.isfile(helper):
+                            os.remove(helper)
+                    except Exception as e:
+                        errors.append(f"{key}: could not delete {os.path.basename(helper)}: {e}")
+
+        if errors:
+            for error in errors[:5]:
+                self.report({'WARNING'}, error)
+            if len(errors) > 5:
+                self.report({'WARNING'}, f"... and {len(errors) - 5} more errors")
+
+        if c3d_written:
+            self.report(
+                {'INFO'},
+                f"Exported {len(c3d_written)} Condor C3D file(s) from "
+                f"{patches_exported} patch(es) in {elapsed_ms}ms -> Working/Autogen/C3D"
+            )
+            return {'FINISHED'}
+        else:
+            self.report({'ERROR'}, "No C3D files were exported")
             return {'CANCELLED'}
 
 
@@ -2186,9 +2398,22 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
                 self.report({'WARNING'}, f"Terrain file not found for patch {patch_id}, skipping terrain import.")
         # --- END TERRAIN IMPORT ---
 
-        if props.patch_tref:
+        # --- GEOMETRY SOURCE: OBJ from Autogen, or the .c3d converted on the fly ---
+        c3d_temp_files = []
+        if props.import_c3d:
+            try:
+                obj_path_lod0, obj_path_lod1, c3d_temp_files = _c3d_to_temp_obj(paths, patch_id)
+            except Exception as exc:
+                self.report({'ERROR'}, f"Failed to convert o{patch_id}.c3d: {exc}")
+                return {'CANCELLED'}
+            missing_msg = f"File o{patch_id}.c3d not found in Working/Autogen/C3D/"
+        else:
             obj_path_lod0 = os.path.join(paths['autogen'], f"o{patch_id}.obj")
             obj_path_lod1 = os.path.join(paths['autogen'], f"o{patch_id}_LOD1.obj")
+            missing_msg = f"File o{patch_id}.obj not found in Working/Autogen/"
+        # --- END GEOMETRY SOURCE ---
+
+        if props.patch_tref:
             if not os.path.exists(obj_path_lod0) and not os.path.exists(obj_path_lod1):
                 print(f"[CONDOR tr3f] no OBJ in autogen, setting viewport")
                 layout_ws = bpy.data.workspaces.get("Layout")
@@ -2221,7 +2446,8 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
                                     if terrain_lock:
                                         space.lock_object = None
                             break
-                self.report({'WARNING'}, f"File o{patch_id}.obj not found in Working/Autogen/")
+                _remove_c3d_temp(c3d_temp_files)
+                self.report({'WARNING'}, missing_msg)
                 return {'FINISHED'}
 
         from ..config import TEXTURE_MAP
@@ -2237,8 +2463,6 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
 
         files_to_import = []
         skipped_lods = []
-        obj_path_lod0 = os.path.join(paths['autogen'], f"o{patch_id}.obj")
-        obj_path_lod1 = os.path.join(paths['autogen'], f"o{patch_id}_LOD1.obj")
         for obj_path, collection_name in (
                 (obj_path_lod0, f"Condor_{props.landscape_name}_{patch_id}"),
                 (obj_path_lod1, f"Condor_{props.landscape_name}_{patch_id}_LOD1")):
@@ -2256,6 +2480,7 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
 
         # everything requested is already in the scene -> nothing to do
         if not files_to_import and skipped_lods:
+            _remove_c3d_temp(c3d_temp_files)
             self.report({'INFO'}, f"Patch {patch_id} already imported ({len(skipped_lods)} LOD) - skipped")
             return {'FINISHED'}
 
@@ -2291,7 +2516,9 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
                                 if terrain_lock:
                                     space.lock_object = None
                         break
-            self.report({'WARNING'}, f"File not found: o{patch_id}.obj or o{patch_id}_LOD1.obj")
+            _remove_c3d_temp(c3d_temp_files)
+            self.report({'WARNING'}, missing_msg if props.import_c3d
+                        else f"File not found: o{patch_id}.obj or o{patch_id}_LOD1.obj")
             return {'FINISHED'}
 
         for obj_path, collection_name in files_to_import:
@@ -2371,6 +2598,9 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
         if os.path.exists(tex_dir):
             bpy.ops.file.find_missing_files(directory=tex_dir)
 
+        # the OBJ/MTL converted from the c3d were only a vehicle for the import
+        _remove_c3d_temp(c3d_temp_files)
+
         # --- SET VIEWPORT ---
         print(f"[CONDOR normal] setting viewport")
         layout_ws = bpy.data.workspaces.get("Layout")
@@ -2422,6 +2652,7 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
 
         errors = []
         imported_patches = []
+        c3d_temp_files = []      # OBJ/MTL converted from the c3d, deleted after the import
 
         def _find_lc(lc, name):
             if lc.name == name:
@@ -2431,6 +2662,11 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
                 if res:
                     return res
             return None
+
+        # Terrain objects imported by THIS run. A terrain that was already in the
+        # scene is left exactly where it is - it has been placed once already, and
+        # adding the patch offset to it a second time moved it a whole tile away.
+        newly_imported_terrain = set()
 
         for patch_id in patch_ids:
 
@@ -2468,6 +2704,7 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
                         if imported_objs:
                             terrain_obj = imported_objs[0]
                             terrain_obj.name = terrain_obj_name
+                            newly_imported_terrain.add(terrain_obj_name)
 
                             mat = bpy.data.materials.get(terrain_obj_name)
                             if not mat:
@@ -2525,8 +2762,17 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
             # --- OBJ IMPORT ---
             files_to_import = []
             any_obj = False
-            obj_path_lod0 = os.path.join(paths['autogen'], f"o{patch_id}.obj")
-            obj_path_lod1 = os.path.join(paths['autogen'], f"o{patch_id}_LOD1.obj")
+            # geometry source: OBJ from Autogen, or the .c3d converted on the fly
+            if props.import_c3d:
+                try:
+                    obj_path_lod0, obj_path_lod1, patch_temp = _c3d_to_temp_obj(paths, patch_id)
+                except Exception as exc:
+                    errors.append(f"Patch {patch_id}: failed to convert o{patch_id}.c3d ({exc})")
+                    continue
+                c3d_temp_files.extend(patch_temp)
+            else:
+                obj_path_lod0 = os.path.join(paths['autogen'], f"o{patch_id}.obj")
+                obj_path_lod1 = os.path.join(paths['autogen'], f"o{patch_id}_LOD1.obj")
             for obj_path, collection_name in (
                     (obj_path_lod0, f"Condor_{props.landscape_name}_{patch_id}"),
                     (obj_path_lod1, f"Condor_{props.landscape_name}_{patch_id}_LOD1")):
@@ -2544,7 +2790,10 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
 
             if not files_to_import:
                 if not any_obj:
-                    errors.append(f"Patch {patch_id}: o{patch_id}.obj not found in Autogen")
+                    if props.import_c3d:
+                        errors.append(f"Patch {patch_id}: o{patch_id}.c3d not found in Working/Autogen/C3D/")
+                    else:
+                        errors.append(f"Patch {patch_id}: o{patch_id}.obj not found in Autogen")
                 continue
 
             for obj_path, collection_name in files_to_import:
@@ -2618,6 +2867,9 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
         if os.path.exists(tex_dir):
             bpy.ops.file.find_missing_files(directory=tex_dir)
 
+        # the OBJ/MTL converted from the c3d were only a vehicle for the import
+        _remove_c3d_temp(c3d_temp_files)
+
         # --- PATCH POSITIONING (only if the terrain checkbox is enabled) ---
         if props.import_patch_terrain:
             min_x = props.patch_x_min
@@ -2637,12 +2889,15 @@ class CONDOR_OT_import_patch(bpy.types.Operator):
                             for obj in col.objects:
                                 obj.location.x += offset_x
                                 obj.location.y += offset_y
-                    # the smoothed twin moves with the terrain it belongs to
-                    for t_name in (f"TR3{pid}", f"TR3{pid}_smooth"):
-                        terrain_obj = bpy.data.objects.get(t_name)
-                        if terrain_obj:
-                            terrain_obj.location.x += offset_x
-                            terrain_obj.location.y += offset_y
+                    # the smoothed twin moves with the terrain it belongs to - but
+                    # ONLY when this run imported it. A terrain already in the scene
+                    # is where it belongs; shifting it again jumped it a tile away.
+                    if f"TR3{pid}" in newly_imported_terrain:
+                        for t_name in (f"TR3{pid}", f"TR3{pid}_smooth"):
+                            terrain_obj = bpy.data.objects.get(t_name)
+                            if terrain_obj:
+                                terrain_obj.location.x += offset_x
+                                terrain_obj.location.y += offset_y
         # --- END PATCH POSITIONING ---
 
         # --- VIEWPORT ---
@@ -2697,6 +2952,7 @@ _classes = [
     CONDOR_OT_import_buildings,
     CONDOR_OT_clear_buildings,
     CONDOR_OT_export_condor,
+    CONDOR_OT_export_c3d,
     CONDOR_OT_export_terrain,
     CONDOR_OT_clear_terrain,
     CONDOR_OT_clear_osm_files,

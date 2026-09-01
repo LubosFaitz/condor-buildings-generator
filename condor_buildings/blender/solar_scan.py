@@ -43,6 +43,18 @@ import urllib.parse
 import urllib.error
 import xml.etree.ElementTree as ET
 
+# The plugin's own certificates (see ssl_context.py next to this file). This file also
+# runs as a standalone script, where the relative import is not available - then the
+# module is taken straight from this folder.
+try:
+    from .ssl_context import urlopen_ssl
+except (ImportError, ValueError):
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from ssl_context import urlopen_ssl
+    except Exception:                             # never stop the scan because of this
+        urlopen_ssl = urllib.request.urlopen
+
 # The Condor folder and the landscape are always passed in by the caller - the
 # add-on's "Scan solar farms" button hands over what is set in its panel. No path
 # is written here, so this works the same on anybody's machine.
@@ -113,7 +125,7 @@ def _query(bbox, cache_path):
             try:
                 req = urllib.request.Request(
                     srv, data=data, headers={"User-Agent": "condor-solar-scan"})
-                with urllib.request.urlopen(req, timeout=TIMEOUT + 60) as r:
+                with urlopen_ssl(req, timeout=TIMEOUT + 60) as r:
                     raw = r.read()
                 try:
                     with open(cache_path, "wb") as f:   # save to cache

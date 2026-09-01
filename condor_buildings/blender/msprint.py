@@ -14,6 +14,8 @@ import shutil
 import urllib.request
 import xml.etree.ElementTree as ET
 
+from .ssl_context import urlopen_ssl
+
 DATASET_LINKS_URL = "https://minedbuildings.z5.web.core.windows.net/global-buildings/dataset-links.csv"
 QK_ZOOM = 9
 DUP_THRESHOLD_M = 12.0
@@ -61,7 +63,7 @@ def _fetch_to_file(url, dest, timeout=300):
     if os.path.exists(dest) and os.path.getsize(dest) > 0:
         return dest
     req = urllib.request.Request(url, headers=_UA)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with urlopen_ssl(req, timeout=timeout) as r:
         data = r.read()
     with open(dest, "wb") as f:
         f.write(data)

@@ -86,6 +86,27 @@ def append_run_log(autogen, header, elapsed_ms, object_names, airport_names):
         logger.warning("run log: append failed for %s: %s", header, e)
 
 
+def append_failed_patches(autogen, patch_ids, reason="OSM download"):
+    """Append a clearly marked block listing the patches that could NOT be
+    generated (e.g. every Overpass server refused the download). Written at the
+    very end of the run so it is the last thing in generate_log.txt. Never
+    raises - logging must not break generation."""
+    try:
+        if not patch_ids:
+            return
+        os.makedirs(autogen, exist_ok=True)
+        lines = []
+        lines.append("!" * 60)
+        lines.append(f"FAILED PATCHES ({reason}): {len(patch_ids)}")
+        for pid in patch_ids:
+            lines.append(f"  {pid}")
+        lines.append("!" * 60)
+        with open(os.path.join(autogen, RUN_LOG_NAME), 'a', encoding='utf-8') as f:
+            f.write("\n".join(lines) + "\n")
+    except Exception as e:
+        logger.warning("run log: failed-patch block failed: %s", e)
+
+
 def airports_in_patch(autogen, projector, patch_half):
     """Names of airports whose centre falls inside this patch, from the shared
     airport/airports.json (written by download_airports_for_patch). Empty list if
@@ -176,10 +197,60 @@ def _merge_turbines(context):
         logger.warning("batch: merge_wind_turbines failed: %s", e)
 
 
+def _convert_patch_to_c3d(patch_id, written, tag="BATCH"):
+    """
+    Convert the patch's just-exported OBJ files into a Condor .c3d - the same
+    steps as the Export C3D button: LOD0 + LOD1 are merged into ONE file (named
+    after LOD0) when both were exported, otherwise a single .c3d is written for
+    the one LOD that is there. On success the helper OBJ + MTL of THIS run are
+    deleted; on failure they are kept. Returns list of errors.
+
+    ``written`` is {lod_name: obj_path} of the files this run exported.
+    ``tag`` only prefixes the console prints ('BATCH' / 'filemode').
+    """
+    from . import convert_c3d
+
+    errors = []
+    cfg = convert_c3d.default_cfg()
+    lod0 = written.get("LOD0")
+    lod1 = written.get("LOD1")
+
+    try:
+        if lod0 and lod1:
+            dst = os.path.splitext(lod0)[0] + ".c3d"   # named after LOD0
+            convert_c3d.convert_pair_to_c3d(lod0, lod1, dst, cfg)
+            used = [lod0, lod1]
+        else:
+            src = lod0 or lod1
+            dst = os.path.splitext(src)[0] + ".c3d"
+            convert_c3d.convert_obj_to_c3d(src, dst, cfg)
+            used = [src]
+    except Exception as e:
+        print(f"[{tag}] {patch_id}: C3D FAILED: {e}")
+        errors.append(f"Patch {patch_id}: C3D conversion failed: {e}")
+        return errors
+
+    print(f"[{tag}] {patch_id}: C3D written -> {os.path.basename(dst)}")
+
+    # remove the helper obj + mtl that this run created
+    for obj_path in used:
+        for helper in (obj_path, os.path.splitext(obj_path)[0] + ".mtl"):
+            try:
+                if os.path.isfile(helper):
+                    os.remove(helper)
+            except Exception as e:
+                print(f"[{tag}] {patch_id}: could not delete {os.path.basename(helper)}: {e}")
+                errors.append(f"Patch {patch_id}: could not delete {os.path.basename(helper)}: {e}")
+
+    return errors
+
+
 def _export_patch(props, patch_id, paths, lods):
     """
     Export the patch's collections to Condor-ready OBJ+MTL (same as the Export
-    button), splitting large objects when Separate is on. Returns list of errors.
+    button). With "Save as C3D" checked the OBJ+MTL go to Working/Autogen/C3D
+    and are converted to a Condor .c3d right there (helper files removed);
+    otherwise they stay as OBJ+MTL in Working/Autogen. Returns list of errors.
     """
     from ..config import (
         build_texture_map, CONDOR_AXIS_SWAP,
@@ -189,6 +260,20 @@ def _export_patch(props, patch_id, paths, lods):
     from .mesh_converter import blender_obj_to_meshdata
 
     errors = []
+
+    # "Save as C3D": export into Working/Autogen/C3D (same folder and naming as
+    # the Export C3D button); unchecked keeps the old Working/Autogen OBJ+MTL.
+    save_c3d = bool(props.save_as_c3d)
+    out_dir = paths['autogen']
+    if save_c3d:
+        out_dir = os.path.join(paths['autogen'], "C3D")
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except Exception as e:
+            print(f"[BATCH] {patch_id}: C3D FAILED: could not create {out_dir}: {e}")
+            return [f"Patch {patch_id}: could not create folder {out_dir}: {e}"]
+
+    written = {}   # lod_name -> exported obj path (input for the c3d conversion)
 
     tex_map = build_texture_map(patch_id, props.flat_roof_terrain_photo)
     condor_tex_map = dict(tex_map)
@@ -220,7 +305,7 @@ def _export_patch(props, patch_id, paths, lods):
             continue
 
         suffix = "" if lod_name == "LOD0" else f"_{lod_name}"
-        out_obj = os.path.join(paths['autogen'], f"o{patch_id}{suffix}.obj")
+        out_obj = os.path.join(out_dir, f"o{patch_id}{suffix}.obj")
         try:
             export_condor_obj_mtl(
                 groups, out_obj, condor_tex_map,
@@ -229,10 +314,15 @@ def _export_patch(props, patch_id, paths, lods):
                 triangulate=CONDOR_EXPORT_TRIANGULATE,
                 include_normals=CONDOR_EXPORT_NORMALS,
             )
+            written[lod_name] = out_obj
             print(f"[BATCH] {patch_id} {lod_name}: exported {len(groups)} objects -> {os.path.basename(out_obj)} + .mtl")
         except Exception as e:
             print(f"[BATCH] {patch_id} {lod_name}: EXPORT FAILED: {e}")
             errors.append(f"Patch {patch_id} {lod_name}: export failed: {e}")
+
+    # Convert this patch's OBJ to .c3d right away and drop the helper files.
+    if save_c3d and written:
+        errors.extend(_convert_patch_to_c3d(patch_id, written))
 
     return errors
 
@@ -938,7 +1028,22 @@ def export_filemode_via_blender(context, props, patch_id, paths, result):
     turbine_seed = random.randint(0, 2**31 - 1)
     randomize_turbines = props.randomize_wind_turbines
 
+    # "Save as C3D": write the OBJ+MTL into Working/Autogen/C3D and convert them
+    # to a Condor .c3d once BOTH LODs are done; unchecked keeps the plain
+    # Working/Autogen OBJ+MTL. The report/log always stay in Working/Autogen.
+    save_c3d = bool(props.save_as_c3d)
+    obj_dir = autogen
+    if save_c3d:
+        obj_dir = os.path.join(autogen, "C3D")
+        try:
+            os.makedirs(obj_dir, exist_ok=True)
+        except Exception as e:
+            print(f"[filemode] {patch_id}: C3D FAILED: could not create {obj_dir}: {e}")
+            save_c3d = False
+            obj_dir = autogen
+
     exported = {}  # suffix -> object names actually written to the OBJ (for the log)
+    written = {}   # lod_name -> exported obj path (input for the c3d conversion)
     for suffix, grouped in lods:
         tmp_col = f"_fmtmp_{patch_id}{suffix}"
         _remove_collection(tmp_col)  # clear any leftover
@@ -971,7 +1076,7 @@ def export_filemode_via_blender(context, props, patch_id, paths, result):
             if chimney_md is not None and not chimney_md.is_empty():
                 groups['chimney'] = chimney_md
 
-            out_obj = os.path.join(autogen, f"o{patch_id}{suffix}.obj")
+            out_obj = os.path.join(obj_dir, f"o{patch_id}{suffix}.obj")
             # 'add mtl batch' is hidden but treated as always ON -> always write
             # the MTL. (To make it a real toggle again: use `if props.add_mtl:`
             # with the export_condor_obj_mtl branch, else export_mesh_groups.)
@@ -1008,8 +1113,14 @@ def export_filemode_via_blender(context, props, patch_id, paths, result):
             except Exception:
                 obj_names = list(groups.keys())
             exported[suffix] = sorted(obj_names)
+            written["LOD1" if suffix == "_LOD1" else "LOD0"] = out_obj
         finally:
             _remove_collection(tmp_col)
+
+    # Both LODs are written (and read back for the log) - now merge them into one
+    # .c3d and drop the helper OBJ+MTL.
+    if save_c3d and written:
+        _convert_patch_to_c3d(patch_id, written, tag="filemode")
 
     # JSON report (run_pipeline does not write it in memory mode)
     try:

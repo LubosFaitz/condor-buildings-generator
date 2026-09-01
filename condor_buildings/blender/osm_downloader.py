@@ -11,6 +11,7 @@ import os
 import re
 import math
 import json
+import importlib
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -20,14 +21,78 @@ import xml.etree.ElementTree as ET
 from typing import Optional, Tuple
 from dataclasses import dataclass
 
+from .ssl_context import urlopen_ssl
+
 logger = logging.getLogger(__name__)
 
-# Overpass API endpoints (multiple servers for redundancy)
+# Overpass API endpoints (multiple servers for redundancy), strongest machine
+# first: VK Maps runs on 56 cores / 384 GB, kumi.systems on 20 / 256 and
+# overpass-api.de on 8 / 128, so a big patch query has the best chance up top.
 OVERPASS_SERVERS = [
-    "https://overpass-api.de/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter",
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
 ]
+
+# How many attempts a patch download gets in total. With four servers this means
+# every server is tried TWICE before the patch is given up on - an overloaded
+# Overpass answers 502/504 within seconds, so the attempts themselves are cheap;
+# it is the growing wait between them that gives the servers time to recover.
+DOWNLOAD_ATTEMPTS = 6
+
+# Growing wait between attempts (seconds); the last value is the cap. Kept short
+# on purpose: a range of a hundred patches must not turn into a multi-day run, so
+# the worst case stays around a minute per patch instead of five. A rate limit
+# (HTTP 429) waits longer than an ordinary error - there the server explicitly
+# asks to be left alone for a while.
+RETRY_WAITS = [3, 8, 15, 25]
+RATE_LIMIT_FACTOR = 2
+RATE_LIMIT_MAX_WAIT = 60
+
+# Index of the server that answered last. The next query starts there instead of
+# always hammering server 0 first - so once a working mirror is found, it keeps
+# being used and a rate-limiting server is not hit first every single time.
+_last_good_server = 0
+
+
+def _retry_wait(attempt: int, rate_limited: bool = False) -> float:
+    """Seconds to wait before the next attempt (``attempt`` is 0-based)."""
+    wait = RETRY_WAITS[min(attempt, len(RETRY_WAITS) - 1)]
+    if rate_limited:
+        wait = min(wait * RATE_LIMIT_FACTOR, RATE_LIMIT_MAX_WAIT)
+    return wait
+
+
+def _remember_server(index: int) -> None:
+    """Remember the server that just answered, so the next query starts there."""
+    global _last_good_server
+    _last_good_server = index % len(OVERPASS_SERVERS)
+
+
+# Everything this run could NOT download, as (patch id, what) pairs - the side
+# queries (tree rows, fences, bridges, airports) used to fail silently, so a
+# patch could end up without its trees and nothing said so. The operator clears
+# this at the start of a run and prints it in the final summary.
+_failed_downloads = []
+
+
+def remember_failed(patch_id, what):
+    """Record a download that did not succeed, for the end-of-run summary."""
+    entry = (str(patch_id) if patch_id else "?", what)
+    if entry not in _failed_downloads:
+        _failed_downloads.append(entry)
+
+
+def clear_failed():
+    """Forget the failures of the previous run."""
+    del _failed_downloads[:]
+
+
+def failed_downloads():
+    """The recorded failures as a list of 'patch: what' strings."""
+    return [f"{pid}: {what}" for pid, what in _failed_downloads]
+
 
 # Timeout for download (seconds)
 DOWNLOAD_TIMEOUT = 120
@@ -48,6 +113,45 @@ class DownloadResult:
     error: Optional[str] = None
     download_time_ms: int = 0
     file_size_bytes: int = 0
+
+
+def mark_side_data_fetched(osm_path):
+    """Write the 'already asked' markers of the optional features into a freshly
+    downloaded map_<patch>.osm.
+
+    The main query above now fetches the tree rows and the fences as well, so those
+    two features must not go and ask a second time - that extra query is exactly what
+    kept failing on an overloaded server and left a patch without its trees. The
+    marker text is taken from the feature modules themselves, so it stays in sync
+    with their versions; a deleted module is simply skipped. Never raises.
+    """
+    marks = []
+    for mod_name in ("tree_rows", "fences"):
+        try:
+            mod = importlib.import_module("." + mod_name, __package__)
+            comment = getattr(mod, "_FETCH_COMMENT", None)
+            if comment:
+                marks.append(comment.strip())
+        except Exception:
+            continue
+    if not marks:
+        return
+    try:
+        with open(osm_path, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+        head_end = text.find(">", text.find("<osm"))
+        if head_end < 0:
+            return
+        missing = [m for m in marks if m not in text]
+        if not missing:
+            return
+        text = text[:head_end + 1] + "\n  " + "\n  ".join(missing) + text[head_end + 1:]
+        tmp = osm_path + ".mark_tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, osm_path)
+    except Exception as e:
+        logger.warning("could not mark side data in %s: %s", osm_path, e)
 
 
 def build_overpass_query(
@@ -123,9 +227,39 @@ def build_overpass_query(
     parts.append(f'  way["bridge"]["railway"]({bbox});')
     parts.append(f'  way["man_made"="bridge"]({bbox});')
 
+    # Tree rows / hedges / tree-lined roads and single trees, and fences. They used
+    # to be fetched by their own extra queries AFTER this one, so a patch could end
+    # up with its buildings but without its trees whenever that second query hit an
+    # overloaded server (504). Asking for everything in ONE query means a patch is
+    # either complete or not downloaded at all. Same tags as tree_rows._tree_row_query
+    # and fences._fence_query; the building parser ignores them.
+    parts.append(f'  way["natural"="tree_row"]({bbox});')
+    parts.append(f'  way["barrier"="hedge"]({bbox});')
+    parts.append(f'  way["barrier"="hedge_bank"]({bbox});')
+    parts.append(f'  way["natural"="hedge"]({bbox});')
+    parts.append(f'  way["fence_type"="hedge"]({bbox});')
+    parts.append(f'  way["highway"]["tree_lined"]({bbox});')
+    parts.append(f'  way["highway"]["tree_lined:left"]({bbox});')
+    parts.append(f'  way["highway"]["tree_lined:right"]({bbox});')
+    parts.append(f'  way["highway"]["tree_lined:both"]({bbox});')
+    parts.append(f'  way["highway"]["denotation"="avenue"]({bbox});')
+    parts.append(f'  way["highway"]["alley"]({bbox});')
+    parts.append(f'  way["waterway"]["tree_lined"]({bbox});')
+    parts.append(f'  way["waterway"]["tree_lined:left"]({bbox});')
+    parts.append(f'  way["waterway"]["tree_lined:right"]({bbox});')
+    parts.append(f'  way["waterway"]["tree_lined:both"]({bbox});')
+    parts.append(f'  node["natural"="tree"]({bbox});')
+    parts.append(f'  node["natural"="tree_group"]({bbox});')
+    parts.append(f'  node["natural"="tree_row"]({bbox});')
+    parts.append(f'  node["natural"="hedge"]({bbox});')
+    parts.append(f'  node["barrier"="hedge"]({bbox});')
+    parts.append(f'  node["barrier"="hedge_bank"]({bbox});')
+    parts.append(f'  node["fence_type"="hedge"]({bbox});')
+    parts.append(f'  way["barrier"="fence"]({bbox});')
+
     body = "\n".join(parts)
     query = f"""
-[out:xml][timeout:90];
+[out:xml][timeout:180];
 (
 {body}
 );
@@ -177,8 +311,8 @@ def download_osm_data(
     lon_min: float,
     lon_max: float,
     output_path: str,
-    server_index: int = 0,
-    retry_count: int = 2
+    server_index: int = -1,
+    retry_count: int = DOWNLOAD_ATTEMPTS - 1
 ) -> DownloadResult:
     """
     Download OSM building data for a bounding box.
@@ -186,7 +320,8 @@ def download_osm_data(
     Args:
         lat_min, lat_max, lon_min, lon_max: Bounding box coordinates
         output_path: Where to save the .osm file
-        server_index: Which Overpass server to use (0-based)
+        server_index: Which Overpass server to start with (0-based); -1 (default)
+            starts with the server that answered last
         retry_count: Number of retries on failure
 
     Returns:
@@ -208,13 +343,19 @@ def download_osm_data(
     # Try each server with retries
     last_error = ""
     start_time = time.time()
+    total_attempts = retry_count + 1
+    # Start with the server that last answered, not always with server 0.
+    start_index = _last_good_server if server_index < 0 else server_index
 
-    for attempt in range(retry_count + 1):
+    for attempt in range(total_attempts):
         # Rotate through servers on retry
-        current_server = OVERPASS_SERVERS[(server_index + attempt) % len(OVERPASS_SERVERS)]
+        current_index = (start_index + attempt) % len(OVERPASS_SERVERS)
+        current_server = OVERPASS_SERVERS[current_index]
+        rate_limited = False
 
         try:
-            logger.info(f"Downloading OSM data from {current_server} (attempt {attempt + 1})")
+            logger.info(f"Downloading OSM data from {current_server} "
+                        f"(attempt {attempt + 1}/{total_attempts})")
 
             # Prepare request
             data = urllib.parse.urlencode({'data': query}).encode('utf-8')
@@ -228,17 +369,23 @@ def download_osm_data(
             )
 
             # Download
-            with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT) as response:
+            with urlopen_ssl(request, timeout=DOWNLOAD_TIMEOUT) as response:
                 content = response.read()
 
                 # Save to file
                 with open(output_path, 'wb') as f:
                     f.write(content)
 
+                # The query above already carries the tree rows and the fences, so
+                # mark the file as done for them - no second query, no patch left
+                # without its trees because that extra query timed out.
+                mark_side_data_fetched(output_path)
+
                 elapsed_ms = int((time.time() - start_time) * 1000)
                 file_size = len(content)
 
                 logger.info(f"Downloaded {file_size} bytes in {elapsed_ms}ms")
+                _remember_server(current_index)
 
                 return DownloadResult(
                     success=True,
@@ -249,28 +396,24 @@ def download_osm_data(
 
         except urllib.error.HTTPError as e:
             last_error = f"HTTP error {e.code}: {e.reason}"
-            logger.warning(f"Download failed: {last_error}")
-
-            # Rate limit - wait before retry
-            if e.code == 429:
-                time.sleep(5)
-            else:
-                time.sleep(1)
+            rate_limited = (e.code == 429)   # rate limit - wait longer
 
         except urllib.error.URLError as e:
             last_error = f"URL error: {e.reason}"
-            logger.warning(f"Download failed: {last_error}")
-            time.sleep(1)
 
         except TimeoutError:
             last_error = "Download timed out"
-            logger.warning(f"Download failed: {last_error}")
-            time.sleep(1)
 
         except Exception as e:
             last_error = str(e)
-            logger.warning(f"Download failed: {last_error}")
-            time.sleep(1)
+
+        # Only reached when the attempt failed (a success returns above).
+        logger.warning(f"Download failed (attempt {attempt + 1}/{total_attempts}, "
+                       f"{current_server}): {last_error}")
+        if attempt < total_attempts - 1:
+            wait = _retry_wait(attempt, rate_limited)
+            logger.info(f"Waiting {wait:.0f} s before the next Overpass attempt")
+            time.sleep(wait)
 
     return DownloadResult(success=False, error=last_error)
 
@@ -432,21 +575,39 @@ def build_aeroway_query(lat_min, lat_max, lon_min, lon_max):
     )
 
 
-def _overpass_fetch(query, retry_count=2):
-    """POST a query to Overpass and return the raw bytes, or None on failure."""
+def _overpass_fetch(query, retry_count=None, what="Overpass query", patch_id=None):
+    """POST a query to Overpass and return the raw bytes, or None on failure.
+
+    Used by every SIDE query (tree rows, fences, bridges, airports), so it gets
+    the same patience as the patch download: as many attempts, the same growing
+    wait, and it starts with the server that last answered. `what` names the data
+    in the log, `patch_id` puts the failure into the end-of-run summary.
+    """
     data = urllib.parse.urlencode({'data': query}).encode('utf-8')
-    for attempt in range(retry_count + 1):
-        server = OVERPASS_SERVERS[attempt % len(OVERPASS_SERVERS)]
+    if retry_count is None:
+        retry_count = DOWNLOAD_ATTEMPTS - 1
+    total_attempts = retry_count + 1
+    start_index = _last_good_server
+    for attempt in range(total_attempts):
+        index = (start_index + attempt) % len(OVERPASS_SERVERS)
+        server = OVERPASS_SERVERS[index]
         try:
             req = urllib.request.Request(
                 server, data=data,
                 headers={'User-Agent': 'CondorBuildings/0.4 (Blender addon)',
                          'Content-Type': 'application/x-www-form-urlencoded'})
-            with urllib.request.urlopen(req, timeout=AIRPORT_TIMEOUT) as resp:
-                return resp.read()
+            with urlopen_ssl(req, timeout=AIRPORT_TIMEOUT) as resp:
+                content = resp.read()
+            _remember_server(index)
+            return content
         except Exception as e:
-            logger.warning("Airport search: Overpass fetch failed (%s): %s", server, e)
-            time.sleep(1)
+            print(f"[download] {what}: failed "
+                  f"(attempt {attempt + 1}/{total_attempts}, {server}): {e}")
+            logger.warning("%s: Overpass fetch failed (attempt %d/%d, %s): %s",
+                           what, attempt + 1, total_attempts, server, e)
+            if attempt < total_attempts - 1:
+                time.sleep(_retry_wait(attempt))
+    remember_failed(patch_id, what)
     return None
 
 
@@ -636,7 +797,7 @@ def download_airports_for_patch(patch_metadata, autogen_dir):
         dlon = half / (111320.0 * math.cos(math.radians(clat)))
         content = _overpass_fetch(build_aeroway_query(
             clat - dlat, clat + dlat, clon - dlon, clon + dlon,
-        ))
+        ), what="airport search", patch_id=patch_id)
         if content is None:
             # a failed/timed-out fetch is NOT recorded, so it is retried next time
             return False

@@ -640,6 +640,32 @@ def _generate_aerialway_group(osm_path, projector, terrain,
     return mesh, mesh_lod1, aw_stats
 
 
+# A turbine's rotor spans 69.1 m (turbine_blades.obj), so two turbines mapped on
+# the same spot - or a few metres apart, which OSM does have - end up with their
+# blades growing through each other. Keep them this far apart instead.
+TURBINE_MIN_GAP = 75.0
+
+
+def _spread_turbines(turbines, min_gap=TURBINE_MIN_GAP):
+    """Drop turbines that stand closer to an already kept one than ``min_gap``.
+
+    OSM sometimes maps one turbine twice (or two of them a few metres apart), and
+    with a 69 m rotor the blades then grow through each other. Keeping only the
+    first of such a pair leaves one clean turbine instead of two overlapping ones.
+    """
+    if len(turbines) < 2:
+        return turbines
+
+    import math as _math
+
+    kept = []
+    for t in turbines:
+        if any(_math.hypot(t.x - k.x, t.y - k.y) < min_gap for k in kept):
+            continue
+        kept.append(t)
+    return kept
+
+
 def _generate_wind_turbines_group(osm_path, projector, terrain, bake_world=False, seed=0,
                                   exclude_zones=None):
     """
@@ -670,6 +696,8 @@ def _generate_wind_turbines_group(osm_path, projector, terrain, bake_world=False
                     if not _point_in_polys(t.x, t.y, exclude_zones)]
         if not turbines:
             return None, None, 0
+
+    turbines = _spread_turbines(turbines)
 
     yaw = 0.0
     if bake_world:

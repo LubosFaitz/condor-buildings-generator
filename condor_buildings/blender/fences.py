@@ -254,7 +254,8 @@ def _fetch_fences_into_osm(paths, patch_id, osm_path):
             return False
         meta = load_patch_metadata(txt_path)
         content = _osm._overpass_fetch(_fence_query(
-            meta.lat_min, meta.lat_max, meta.lon_min, meta.lon_max))
+            meta.lat_min, meta.lat_max, meta.lon_min, meta.lon_max),
+            what="fences", patch_id=patch_id)
         if content is None:
             # a failed fetch writes NO marker, so it is tried again next time
             logger.warning("fences: the Overpass query for patch %s failed - the fences "

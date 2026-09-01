@@ -77,6 +77,7 @@ def _download_mask(paths, patch_id, meta):
     the whole patch, no tiles. Returns its path, or None when it is not available (no
     connection, service down)."""
     import urllib.request
+    from .ssl_context import urlopen_ssl
 
     dst = _cache_path(paths, patch_id)
     if os.path.exists(dst) and os.path.getsize(dst) > 0:
@@ -89,7 +90,7 @@ def _download_mask(paths, patch_id, meta):
     tmp = dst + ".part"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "condor-tree-rows"})
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
+        with urlopen_ssl(req, timeout=HTTP_TIMEOUT) as r:
             data = r.read()
         if not data:
             return None

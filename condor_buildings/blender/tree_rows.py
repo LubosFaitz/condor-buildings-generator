@@ -502,17 +502,28 @@ def _fetch_tree_rows_into_osm(paths, patch_id, osm_path):
             os.path.join(paths['heightmaps'], f"h{patch_id}.txt"),
             os.path.join(paths['heightmaps'], f"H{patch_id}.txt")) if os.path.exists(p)), None)
         if not txt_path:
+            print(f"[tree_rows] patch {patch_id}: h{patch_id}.txt not found in Heightmaps "
+                  f"- the tree rows cannot be downloaded")
+            _osm.remember_failed(patch_id, "tree rows (no heightmap txt)")
             return False
         meta = load_patch_metadata(txt_path)
         content = _osm._overpass_fetch(_tree_row_query(
-            meta.lat_min, meta.lat_max, meta.lon_min, meta.lon_max))
+            meta.lat_min, meta.lat_max, meta.lon_min, meta.lon_max),
+            what="tree rows", patch_id=patch_id)
         if content is None:
             # a failed fetch writes NO marker, so it is tried again next time
+            print(f"[tree_rows] patch {patch_id}: the Overpass query failed - "
+                  f"the tree rows are skipped for now")
             logger.warning("tree_rows: the Overpass query for patch %s failed - the tree "
                            "rows are skipped for now", patch_id)
             return False
         n = _merge_osm_elements(osm_path, content)
         if n is None:
+            # downloaded fine, but writing it into the patch OSM did not work - used to
+            # be silent, which is how a patch could end up without its trees unnoticed
+            print(f"[tree_rows] patch {patch_id}: downloaded, but writing them into "
+                  f"map_{patch_id}.osm failed - the tree rows are skipped for now")
+            _osm.remember_failed(patch_id, "tree rows (writing into the patch OSM failed)")
             return False
         print(f"[tree_rows] patch {patch_id}: {n} tree-row element(s) added to "
               f"map_{patch_id}.osm")
@@ -534,7 +545,13 @@ def _ensure_tree_row_data(paths, patch_id, osm_path):
     if marked:
         return has_rows, False
     if not _fetch_tree_rows_into_osm(paths, patch_id, osm_path):
-        return False, False
+        # The download did not work, but the file may already hold lines of trees from an
+        # earlier run - build those instead of throwing them away. No marker is written,
+        # so the missing sources are fetched again next time.
+        if has_rows:
+            print(f"[tree_rows] patch {patch_id}: download failed - building the tree rows "
+                  f"already in map_{patch_id}.osm")
+        return has_rows, False
     has_rows, _m = _osm_scan(osm_path)
     return has_rows, True
 

@@ -160,6 +160,12 @@ class CondorBuildingsProperties(PropertyGroup):
         default=False,
     )
 
+    import_c3d: BoolProperty(
+        name="Import C3D",
+        description="Import the patch from the Condor .c3d file instead of the OBJ",
+        default=False,
+    )
+
     # --- OSM Data Source ---
 
     osm_source: EnumProperty(
@@ -195,6 +201,12 @@ class CondorBuildingsProperties(PropertyGroup):
         name="Import to Blender",
         description="Import generated meshes into Blender viewport",
         default=True,
+    )
+
+    save_as_c3d: BoolProperty(
+        name="Save as C3D",
+        description="Save the generated files as Condor .c3d instead of .obj",
+        default=False,
     )
 
     # --- Roof Selection ---
