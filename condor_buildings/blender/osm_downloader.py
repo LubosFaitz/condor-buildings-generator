@@ -154,6 +154,16 @@ def mark_side_data_fetched(osm_path):
         logger.warning("could not mark side data in %s: %s", osm_path, e)
 
 
+def _feature_enabled(prop_name):
+    """True when the feature's Batch checkbox is ticked in the scene. False outside
+    Blender or before the feature module registered its property."""
+    try:
+        import bpy
+        return bool(getattr(bpy.context.scene, prop_name, False))
+    except Exception:
+        return False
+
+
 def build_overpass_query(
     lat_min: float,
     lat_max: float,
@@ -161,6 +171,8 @@ def build_overpass_query(
     lon_max: float,
     include_relations: bool = True,
     include_power: bool = True,
+    include_trees: Optional[bool] = None,
+    include_fences: Optional[bool] = None,
 ) -> str:
     """
     Build an Overpass QL query for building (and optionally powerline) data.
@@ -178,6 +190,15 @@ def build_overpass_query(
     Returns:
         Overpass QL query string
     """
+    # Tree rows and fences ride along only when their feature is switched on (the
+    # Batch checkbox in the panel). Asked for here instead of guessed by the caller,
+    # so every place that downloads a patch behaves the same. Outside Blender
+    # (no scene) they stay out of the query.
+    if include_trees is None:
+        include_trees = _feature_enabled("condor_tree_row_batch")
+    if include_fences is None:
+        include_fences = _feature_enabled("condor_fence_batch")
+
     # Bounding box format for Overpass: (south,west,north,east)
     bbox = f"{lat_min},{lon_min},{lat_max},{lon_max}"
 
@@ -233,6 +254,30 @@ def build_overpass_query(
     # overloaded server (504). Asking for everything in ONE query means a patch is
     # either complete or not downloaded at all. Same tags as tree_rows._tree_row_query
     # and fences._fence_query; the building parser ignores them.
+    #
+    # Only for the features that are actually switched on (their Batch checkbox) -
+    # someone who does not build tree rows should not pay for them in every download.
+    if include_trees:
+        _append_tree_row_parts(parts, bbox)
+    if include_fences:
+        parts.append(f'  way["barrier"="fence"]({bbox});')
+
+    body = "\n".join(parts)
+    query = f"""
+[out:xml][timeout:180];
+(
+{body}
+);
+out body;
+>;
+out skel qt;
+"""
+
+    return query.strip()
+
+
+def _append_tree_row_parts(parts, bbox):
+    """The tree-row / hedge / single-tree tags, same set as tree_rows._tree_row_query."""
     parts.append(f'  way["natural"="tree_row"]({bbox});')
     parts.append(f'  way["barrier"="hedge"]({bbox});')
     parts.append(f'  way["barrier"="hedge_bank"]({bbox});')
@@ -255,20 +300,6 @@ def build_overpass_query(
     parts.append(f'  node["barrier"="hedge"]({bbox});')
     parts.append(f'  node["barrier"="hedge_bank"]({bbox});')
     parts.append(f'  node["fence_type"="hedge"]({bbox});')
-    parts.append(f'  way["barrier"="fence"]({bbox});')
-
-    body = "\n".join(parts)
-    query = f"""
-[out:xml][timeout:180];
-(
-{body}
-);
-out body;
->;
-out skel qt;
-"""
-
-    return query.strip()
 
 
 def validate_bbox(
