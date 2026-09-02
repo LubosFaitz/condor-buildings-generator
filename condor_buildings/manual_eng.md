@@ -2,7 +2,7 @@
 
 Plugin for Blender that generates 3D buildings for the Condor flight simulator. Building data is sourced from OpenStreetMap; terrain comes from Condor's heightmap files. The resulting OBJ/MTL files are written directly to Working/Autogen — or straight as finished `.c3d` files into Working/Autogen/C3D.
 
-**Version 0.9.18**
+**Version 0.9.19**
 
 ---
 
@@ -591,6 +591,18 @@ At the end, displays the number of exported files, patch count, and elapsed time
 Exports the same thing, but into the new `Working/Autogen/C3D` folder, and converts the finished files straight into Condor's `.c3d` format. The helper OBJ and MTL are deleted from that folder after the conversion — only the `.c3d` files are left there.
 
 With **Both LODs** selected, LOD0 and LOD1 are joined into **one merged `.c3d`** holding both LODs (named after the LOD0 file). At the end it reports how many `.c3d` files were produced from how many patches.
+
+### A leaner `.c3d` (since 0.9.19)
+
+The plugin used to store more points in a `.c3d` than the format needs. Every point in that format is stored together with the direction it faces and with how the texture lies on it, so two points that agree in all of that only have to be stored once. The comparison is made on **rounded** values — the position to seven digits, the direction and the texture to five — but the plugin compared them exactly, so two points differing as far down as the sixth decimal place counted as different and both were written out. On a single tile that came to almost five thousand points too many.
+
+Points are now compared and merged properly:
+- the position is rounded to seven digits, the direction and the texture to five
+- points are merged across the whole model, not only within a single group
+- a face with no normal given is written as zero
+- the texture-flip convention is corrected (1 − v instead of −v)
+
+The resulting file is **byte-for-byte identical** to the one the landscape editor produces — verified by checksum on tile o036019. It applies to the **Export C3D** button and to the **Save as C3D** checkbox alike.
 
 ---
 

@@ -28,6 +28,35 @@ TEX_PREFIX      = "Textures\\"   # path (prefix) to the textures
 # ============================================================================
 #  OBJ -> C3D  (conversion core)
 # ============================================================================
+from decimal import Decimal, Context, ROUND_HALF_UP
+
+_CTX7 = Context(prec=7, rounding=ROUND_HALF_UP)
+_CTX5 = Context(prec=5, rounding=ROUND_HALF_UP)
+_KC7 = {}
+_KC5 = {}
+
+
+def _f32(x):
+    # value exactly as it will be stored in the file (4-byte float)
+    return struct.unpack("<f", struct.pack("<f", x))[0]
+
+
+def _k7(x):
+    v = _KC7.get(x)
+    if v is None:
+        v = str(_CTX7.create_decimal_from_float(_f32(x) + 0.0).normalize())
+        _KC7[x] = v
+    return v
+
+
+def _k5(x):
+    v = _KC5.get(x)
+    if v is None:
+        v = str(_CTX5.create_decimal_from_float(_f32(x) + 0.0).normalize())
+        _KC5[x] = v
+    return v
+
+
 def _resolve(idx, count):
     if idx is None:
         return None
@@ -149,15 +178,19 @@ def build_objects(positions, texcoords, normals, groups, cfg, mtl_map):
     swap = cfg["swap_uv"]
     ds = cfg["double_sided"]
 
+    dedup = {}
     for g in groups:
         if not g["faces"]:
             continue
         first_vertex = len(all_vertices)
         first_index = len(all_indices)
-        dedup = {}
 
         def add_vertex(vt):
-            key = tuple(round(x, 6) for x in vt)
+            # position to 7 significant digits, normal and UV to 5,
+            # half-up rounding - two vertices matching there are one vertex
+            key = (_k7(vt[0]), _k7(vt[1]), _k7(vt[2]),
+                   _k5(vt[3]), _k5(vt[4]), _k5(vt[5]),
+                   _k5(vt[6]), _k5(vt[7]))
             li = dedup.get(key)
             if li is None:
                 li = len(dedup)
@@ -173,9 +206,7 @@ def build_objects(positions, texcoords, normals, groups, cfg, mtl_map):
                 if ni is not None and ni < len(normals):
                     nx, ny, nz = normals[ni]
                 else:
-                    if computed is None:
-                        computed = face_normal(positions, face)
-                    nx, ny, nz = computed
+                    nx, ny, nz = 0.0, 0.0, 0.0    # no normal given -> zero
                 if ti is not None and ti < len(texcoords):
                     u, v = texcoords[ti]
                 else:
@@ -183,7 +214,7 @@ def build_objects(positions, texcoords, normals, groups, cfg, mtl_map):
                 if swap:
                     u, v = v, u
                 if flip:
-                    v = -v
+                    v = 1.0 - v
                 data.append((px, py, pz, nx, ny, nz, u, v))
 
             def emit(verts, reverse):
@@ -191,7 +222,7 @@ def build_objects(positions, texcoords, normals, groups, cfg, mtl_map):
                     tri = (verts[0], verts[k + 1], verts[k]) if reverse \
                         else (verts[0], verts[k], verts[k + 1])
                     for li in tri:
-                        all_indices.append(first_vertex + li)
+                        all_indices.append(li)
 
             front = [add_vertex(d) for d in data]
             emit(front, rev)
@@ -359,7 +390,7 @@ def write_obj(obj_path, objects, verts, vcount, idx, cfg, lod=0):
         b = i * 8
         u, v = verts[b + 6], verts[b + 7]
         if flip:
-            v = -v
+            v = 1.0 - v
         if swap:
             u, v = v, u
         ap("vt %.6f %.6f" % (u, v))
