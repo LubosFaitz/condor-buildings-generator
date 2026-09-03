@@ -2,7 +2,7 @@
 
 ### ➡️ [Download the latest release](https://github.com/LubosFaitz/condor-buildings-generator/releases/latest)
 
-[![Version](https://img.shields.io/badge/version-0.9.19-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
+[![Version](https://img.shields.io/badge/version-0.9.20-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org/)
 [![Blender](https://img.shields.io/badge/blender-4.0+-orange.svg)](https://www.blender.org/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
@@ -43,6 +43,18 @@ python -m condor_buildings.main \
 9. Set patch range (X/Y min/max) or enable single patch mode
 10. Click "Generate Buildings"
 
+**New in v0.9.20 — power lines that line up across the tile seam:**
+- **A border pylon now stands on the real ground of the next tile.** Where a line runs out of the tile, one pylon is built beyond the edge so the cables have somewhere to go. Its height used to be guessed from the edge of the tile being built, so the same pylon came out at a different height when the neighbouring tile built it — the cables kinked and the pylon jumped up or down at the seam. The height is now read from the neighbouring tile's height map, exactly as the aerialways already did.
+- **The neighbour is looked up on the correct side.** The code reached for the height map on the opposite side — a pylon past the eastern edge was given ground from the tile to the west, 11.5 km away. On the Condor grid the column number grows from right to left (opposite to the local X axis) while the row number grows from bottom to top (the same as Y), and that is now respected. This also fixes the **aerialways**, which used the same lookup.
+- **A pylon on the seam is built only once.** The tiles now leave each other notes in a small `border_pylons.json` file next to the landscape's map data. Each pylon written there carries its position, height, orientation and — most importantly — **the points the cables attach to**, the crossarm tips. Whoever builds second reads the note and:
+
+  - does not build the finished pylon again
+  - attaches its own cables to the recorded crossarm points
+  - does not draw a span that the first tile already drew in full
+
+  Delete `border_pylons.json` if you download the map data again and a line genuinely moves; the plugin recreates it on the next run. Otherwise there is no need to touch it.
+- **Pylons keep their distance so cables cannot cross.** Around each pylon origin there is a keep-out circle whose diameter is the crossarm span plus a margin — **28.7 m for a large pylon, 13 m for a medium one, 2 m for a small one** — and the circles of two pylons must never overlap, so the minimum centre-to-centre distance of a pair is the sum of their radii. Until now this was only enforced within 1000 m of a substation; out in the open country nothing was checked at all, and two lines running side by side could end up with their arms overlapping. The check also measures the **distance between the line routes themselves**, not just pylon centre to pylon centre, so two lines whose pylons are staggered rather than opposite each other are still kept apart. Substations, entry pylons and gantries are untouched and keep their own spacing.
+
 **New in v0.9.19 — a leaner `.c3d`:**
 - **The `.c3d` file no longer holds more points than it needs.** In that format every point is stored together with the direction it faces and with how the texture lies on it, so two points that agree in all of that only have to be stored once. The comparison is made on rounded values — the position to seven digits, the direction and the texture to five — but the plugin compared them exactly, so two points differing as far down as the sixth decimal place counted as different and both were written out. On a single tile that came to almost five thousand points too many. Points are now compared and merged properly:
 
@@ -55,13 +67,33 @@ python -m condor_buildings.main \
 
 **New in v0.9.18 — Condor .c3d files and downloads that get through:**
 - **The Export Condor OBJ+MTL button is split into two.** **Export OBJ** does exactly what it always did — Condor-ready OBJ+MTL written into `Working/Autogen`. **Export C3D** exports into the new `Working/Autogen/C3D` folder, converts the result into Condor's `.c3d` format and deletes the helper OBJ+MTL from that folder afterwards. With **Both LODs** the two LODs are joined into **one merged `.c3d`** holding both.
-- **A new `Save as C3D` / `Save as OBJ` checkbox** in the *Output* box. Checked, the generation writes straight into `Working/Autogen/C3D` as `.c3d` (the helper OBJ and MTL are removed); unchecked, it writes OBJ+MTL into `Working/Autogen` exactly as before. It works both in **Batch download** mode and with **Batch processing** on, and the run log and reports stay in `Working/Autogen`.
+- **A new `Save as C3D` / `Save as OBJ` checkbox** in the *Output* box. Its label changes with its state, and it decides in which format the generation writes the result:
+
+  - **Checked — `Save as C3D`** — the result is written as a `.c3d` file, and the helper OBJ and MTL are removed afterwards. Target folder:
+
+    `Working/Autogen/C3D`
+
+  - **Unchecked — `Save as OBJ`** — OBJ+MTL are written exactly as before. Target folder:
+
+    `Working/Autogen`
+
+  It works both in **Batch download** mode and with **Batch processing** on. The run log and the reports always stay in `Working/Autogen`.
+
 - **The Output checkbox now names itself after its mode.** It decides whether you see the result in the scene straight away or whether it ends up only as files on disk:
 
-  - **Checked ("Import to Blender")** — the generated buildings are loaded straight into Blender, into the collections `Condor_<landscape>_<patch>` (and `_LOD1`), so you can look at them and edit them. With `terrain` checked as well, the terrain of the patch is imported along with them.
-  - **Unchecked ("Batch download")** — nothing is loaded into Blender; the buildings are written straight out as files into `Working/Autogen` (or as `.c3d` into `Working/Autogen/C3D` when `Save as C3D` is checked). It is the mode for processing larger numbers of patches in bulk, where you do not want the scene filled up. A detailed run log `o<patch>.log` and a report `o<patch>_report.json` are written next to the files.
+  - **Checked — `Import to Blender`** — the generated buildings are loaded straight into Blender so you can look at them and edit them. They go into these collections:
 
-  A finished patch is loaded from the files with the **Import Patch** button in *Patch Selection* — from the OBJ, or (with `Import C3D` checked) from the `.c3d` in `Working/Autogen/C3D`.
+    `Condor_<landscape>_<patch>`
+    `Condor_<landscape>_<patch>_LOD1`
+
+    With the `terrain` checkbox ticked as well, the terrain of the patch is imported along with them.
+
+  - **Unchecked — `Batch download`** — nothing is loaded into Blender; the buildings are written straight out as files. It is the mode for processing larger numbers of patches in bulk, where you do not want the scene filled up. The target folder is `Working/Autogen`, or `Working/Autogen/C3D` when `Save as C3D` is checked. Written next to the files are:
+
+    `o<patch>.log` — a detailed run log
+    `o<patch>_report.json` — a report
+
+  A finished patch is loaded from the files with the **Import Patch** button in *Patch Selection* — from the OBJ, or, with the `Import C3D` checkbox ticked, from the `.c3d` file in `Working/Autogen/C3D`.
 - **A new `Import C3D` checkbox** in *Patch Selection*, above the Single Patch toggle and valid for a single patch and a range alike. With it on, *Import Patch* reads the buildings from a finished `o<patch>.c3d` in `Working/Autogen/C3D` (both LODs at once from a merged file); the plugin converts it itself and removes the helper files right after the import. Off, the import comes from the OBJ as before.
 - **The plugin ships its own certificate bundle.** `certs/cacert.pem` now comes with the add-on and every download goes through it, which fixes the `certificate has expired` error that stopped OSM downloads working at all on machines whose Windows root certificates were out of date. The sources are tried in order:
 
