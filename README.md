@@ -43,17 +43,29 @@ python -m condor_buildings.main \
 9. Set patch range (X/Y min/max) or enable single patch mode
 10. Click "Generate Buildings"
 
-**New in v0.9.20 — power lines that line up across the tile seam:**
-- **A border pylon now stands on the real ground of the next tile.** Where a line runs out of the tile, one pylon is built beyond the edge so the cables have somewhere to go. Its height used to be guessed from the edge of the tile being built, so the same pylon came out at a different height when the neighbouring tile built it — the cables kinked and the pylon jumped up or down at the seam. The height is now read from the neighbouring tile's height map, exactly as the aerialways already did.
-- **The neighbour is looked up on the correct side.** The code reached for the height map on the opposite side — a pylon past the eastern edge was given ground from the tile to the west, 11.5 km away. On the Condor grid the column number grows from right to left (opposite to the local X axis) while the row number grows from bottom to top (the same as Y), and that is now respected. This also fixes the **aerialways**, which used the same lookup.
-- **A pylon on the seam is built only once.** The tiles now leave each other notes in a small `border_pylons.json` file next to the landscape's map data. Each pylon written there carries its position, height, orientation and — most importantly — **the points the cables attach to**, the crossarm tips. Whoever builds second reads the note and:
+**New in v0.9.20 — power lines across the tile seam:**
+- **A border pylon stands on the real ground of the next tile**, so both tiles put it at the same height and the cables have no kink at the seam. Applies to aerialways too.
+- **A pylon on the seam is built only once.** The tiles leave each other notes in `border_pylons.json` next to the landscape's map data, keyed by the pylon's OSM node id. Whoever builds second does not build the pylon again, attaches its cables to the recorded crossarm points, and does not redraw a span the first tile already drew. Written for every pylon:
 
-  - does not build the finished pylon again
-  - attaches its own cables to the recorded crossarm points
-  - does not draw a span that the first tile already drew in full
+  | field | meaning |
+  |---|---|
+  | `patch` | the tile that built the pylon and wrote the note |
+  | `in_patch` | the tile the pylon physically stands in |
+  | `inside` | `true` inside its own tile, `false` beyond the border at the neighbour |
+  | `utm_x`, `utm_y` | position, absolute |
+  | `z` | height of the foot |
+  | `yaw` | orientation of the crossarm |
+  | `type` | `Pylon_Large`, `Pylon_Medium` or `Pylon_Small` |
+  | `attach` | the points the cables attach to — the crossarm tips, absolute |
 
-  Delete `border_pylons.json` if you download the map data again and a line genuinely moves; the plugin recreates it on the next run. Otherwise there is no need to touch it.
-- **Pylons keep their distance so cables cannot cross.** Around each pylon origin there is a keep-out circle whose diameter is the crossarm span plus a margin — **28.7 m for a large pylon, 13 m for a medium one, 2 m for a small one** — and the circles of two pylons must never overlap, so the minimum centre-to-centre distance of a pair is the sum of their radii. Until now this was only enforced within 1000 m of a substation; out in the open country nothing was checked at all, and two lines running side by side could end up with their arms overlapping. The check also measures the **distance between the line routes themselves**, not just pylon centre to pylon centre, so two lines whose pylons are staggered rather than opposite each other are still kept apart. Substations, entry pylons and gantries are untouched and keep their own spacing.
+  Delete the file if you download the map data again and a line genuinely moves; it is recreated on the next run.
+- **Pylons keep their distance so cables cannot cross.** A keep-out circle around each pylon origin, and the circles of two pylons must never overlap — the minimum centre-to-centre distance of a pair is the sum of their radii. The distance between the **line routes** is measured too, not just origin to origin. Substations keep their own spacing.
+
+  | pylon type | circle diameter |
+  |---|---|
+  | Pylon_Large | 28.7 m |
+  | Pylon_Medium | 13.0 m |
+  | Pylon_Small | 2.0 m |
 
 **New in v0.9.19 — a leaner `.c3d`:**
 - **The `.c3d` file no longer holds more points than it needs.** In that format every point is stored together with the direction it faces and with how the texture lies on it, so two points that agree in all of that only have to be stored once. The comparison is made on rounded values — the position to seven digits, the direction and the texture to five — but the plugin compared them exactly, so two points differing as far down as the sixth decimal place counted as different and both were written out. On a single tile that came to almost five thousand points too many. Points are now compared and merged properly:
