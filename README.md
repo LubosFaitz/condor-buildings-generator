@@ -2,7 +2,7 @@
 
 ### ➡️ [Download the latest release](https://github.com/LubosFaitz/condor-buildings-generator/releases/latest)
 
-[![Version](https://img.shields.io/badge/version-0.9.20-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
+[![Version](https://img.shields.io/badge/version-0.9.21-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org/)
 [![Blender](https://img.shields.io/badge/blender-4.0+-orange.svg)](https://www.blender.org/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
@@ -42,6 +42,13 @@ python -m condor_buildings.main \
 8. Select a landscape from the dropdown
 9. Set patch range (X/Y min/max) or enable single patch mode
 10. Click "Generate Buildings"
+
+**New in v0.9.21 — the flat-roof orthophoto found by Condor on its own:**
+- **The `.c3d` now carries the full path to the orthophoto.** With *Terrain photo on flat roofs* the merged `flat_roof` is textured with the tile orthophoto, which does not live with the atlases in `Autogen\Textures` but in the landscape's own `Textures` folder. The MTL marks it with a `T_` prefix for the Landscape Editor to rewrite; the conversion to `.c3d` now writes the real path instead:
+
+  `Landscapes\<landscape>\Textures\t<patch>.dds`
+
+  The landscape is the one selected in the panel and the file name keeps the tile it belongs to, so every tile points at its own photo. The OBJ export is unchanged, and every other texture still resolves from `Autogen\Textures`.
 
 **New in v0.9.20 — power lines across the tile seam:**
 - **A border pylon stands on the real ground of the next tile**, so both tiles put it at the same height and the cables have no kink at the seam. Applies to aerialways too.
