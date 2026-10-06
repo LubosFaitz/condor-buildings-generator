@@ -2,7 +2,7 @@
 
 ### ➡️ [Download the latest release](https://github.com/LubosFaitz/condor-buildings-generator/releases/latest)
 
-[![Version](https://img.shields.io/badge/version-0.9.21-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
+[![Version](https://img.shields.io/badge/version-0.9.22-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org/)
 [![Blender](https://img.shields.io/badge/blender-4.0+-orange.svg)](https://www.blender.org/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
@@ -42,6 +42,25 @@ python -m condor_buildings.main \
 8. Select a landscape from the dropdown
 9. Set patch range (X/Y min/max) or enable single patch mode
 10. Click "Generate Buildings"
+
+**New in v0.9.22 — map data from local PBF files, silos, water towers and downloads that never give up:**
+- **OSM_pbf — no server needed.** With the new **OSM_pbf** checkbox all map data comes from `.osm.pbf` files downloaded from Geofabrik. **Detect countries scenery** writes `Scenery countries.html` with clickable links to exactly the files the scenery needs. Several files can be selected at once (Ctrl+A). **Split into Patches** is pressed once: it splits everything into one small file per patch, in the folder:
+
+  `<scenery name> PBF OSM patch`
+
+  **Everything** tagged in the PBF goes into the patch files, so a new object type added to the plugin later is found without splitting again. The split runs in several processes, keeps 8 GB of RAM free and prints its progress to the console (Czech_Republic2 with 14 PBF files: about 22 minutes). Generate then takes each patch in a few seconds. Reading PBF needs **pyosmium**, installed automatically the first time.
+- **Silos.** A new **Silo** row in *Other objects* (Import, Merge, Batch) builds grain and industrial silos from these tags:
+
+  `man_made=silo`
+  `building=silo`
+
+  The model `silos.obj` is turned along the longer side of the outline and stretched to it; a silo mapped as a point gets the full-size model facing north and can be turned by hand. Height from OSM, otherwise 26.8 m. The model's own smooth shading is kept on import and export. A building under a silo is not built.
+- **Water towers.** A new **Water tower** row (Import, Batch) builds `man_made=water_tower` with its own LOD0 and LOD1 model, scaled to the OSM height, merged into one `watertower` object. No building is generated under a water tower.
+- **Downloads that never give up.** The plugin asks the server simply for everything in the patch rectangle and keeps only what it needs afterwards. Four servers, strongest first, 60 s each, and new rounds until the data is downloaded. **The console opens by itself** on Generate Buildings and shows the server, how busy it is, how long it has been waiting, and where the data came from.
+- **Chimneys mapped only as a point** are downloaded and taken from PBF too.
+- **Objects exactly on the patch border are built only once** — buildings, chimneys, transmitters, water towers, silos, tree rows and wind turbines. The left and bottom edges belong to the patch, the right and top edges to the neighbour. A house lying half across the border is built whole in the patch containing its centre; a solar farm across the border is built whole by one patch.
+- **Aerialways across the border** work like the power line pylons: the border pylon is built once (`border_aerialways.json`) and the cable continues.
+- **Wind turbines near the border** (within 500 m) are rotated like the nearest turbine of an already merged neighbour (`wind_turbines.json`).
 
 **New in v0.9.21 — the flat-roof orthophoto found by Condor on its own:**
 - **The `.c3d` now carries the full path to the orthophoto.** With *Terrain photo on flat roofs* the merged `flat_roof` is textured with the tile orthophoto, which does not live with the atlases in `Autogen\Textures` but in the landscape's own `Textures` folder. The MTL marks it with a `T_` prefix for the Landscape Editor to rewrite; the conversion to `.c3d` now writes the real path instead:
@@ -414,11 +433,15 @@ condor_buildings/
 │   ├── panels.py            # UI panels (sidebar)
 │   ├── mesh_converter.py    # MeshData → Blender mesh conversion
 │   ├── osm_downloader.py    # Download OSM/aeroway data from Overpass API
+│   ├── pbf_source.py        # Map data from local PBF files (OSM_pbf, Split into Patches)
+│   ├── pbf_split_worker.py  # Worker process of Split into Patches
 │   ├── ssl_context.py       # HTTPS certificates for all downloads (certs/cacert.pem first)
 │   ├── convert_c3d.py       # OBJ+MTL <-> Condor .c3d conversion (Export C3D / Import C3D)
 │   ├── batch_processing.py  # File-mode / batch export via Blender, chimneys, run logs
 │   ├── msprint.py           # Merge Microsoft Buildings footprints into the OSM data
 │   ├── transmitters.py      # Transmitter / mast module (man_made=mast/tower)
+│   ├── water_towers.py      # Water towers (man_made=water_tower)
+│   ├── silos.py             # Grain and industrial silos (man_made=silo, building=silo)
 │   ├── bridges.py           # Bridges over water/valleys (road, motorway, rail)
 │   ├── fences.py            # Fences from OSM (barrier=fence): posts + two wires
 │   └── solar.py             # Ground solar farms from OSM + ESRI imagery mask (single patch)
