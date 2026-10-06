@@ -1,6 +1,0 @@
-newmtl wind_turbine
-Kd 1 1 1
-Ks 0 0 0
-Ns 0
-d 1
-map_Kd WindTurbine.dds
