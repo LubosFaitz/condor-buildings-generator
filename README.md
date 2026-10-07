@@ -44,7 +44,7 @@ python -m condor_buildings.main \
 10. Click "Generate Buildings"
 
 **New in v0.9.22 — map data from local PBF files, silos, water towers and downloads that never give up:**
-- **OSM_pbf — no server needed.** With the new **OSM_pbf** checkbox all map data comes from `.osm.pbf` files downloaded from Geofabrik. **Detect countries scenery** writes `Scenery countries.html` with clickable links to exactly the files the scenery needs. Several files can be selected at once (Ctrl+A). **Split into Patches** is pressed once: it splits everything into one small file per patch, in the folder:
+- **OSM_pbf — no server needed.** With the new **OSM_pbf** checkbox all map data comes from `.osm.pbf` files downloaded from Geofabrik. **Detect countries scenery** writes `Scenery countries.html` with clickable links to exactly the files the scenery needs — only the regions that reach into the scenery, even across the sea (United Kingdom3 gets three French regions instead of the whole of France) — with the **size of every file** and the **total size**. Several files can be selected at once (Ctrl+A). **Split into Patches** is pressed once: it splits everything into one small file per patch, in the folder:
 
   `<scenery name> PBF OSM patch`
 
