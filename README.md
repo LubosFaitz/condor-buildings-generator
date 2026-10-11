@@ -2,7 +2,7 @@
 
 ### ➡️ [Download the latest release](https://github.com/LubosFaitz/condor-buildings-generator/releases/latest)
 
-[![Version](https://img.shields.io/badge/version-0.9.22-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
+[![Version](https://img.shields.io/badge/version-0.9.23-blue.svg)](https://github.com/yourusername/condor-buildings-generator)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org/)
 [![Blender](https://img.shields.io/badge/blender-4.0+-orange.svg)](https://www.blender.org/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
@@ -42,6 +42,11 @@ python -m condor_buildings.main \
 8. Select a landscape from the dropdown
 9. Set patch range (X/Y min/max) or enable single patch mode
 10. Click "Generate Buildings"
+
+**New in v0.9.23 — remembered settings, narrow silos, no cylinders under chimneys:**
+- **The panel settings are remembered.** Condor Directory, Landscape, the patch numbers, all checkboxes (the *Other objects* Batch ones too), OSM_pbf and the selected PBF files are saved by themselves after every change into `condor_buildings_settings.json`, in the `addons` folder next to the plugin folder. On every Blender start and every new or opened file the panel is filled with the last used values — no `.blend` needs to be saved.
+- **No building under a chimney, transmitter or wind turbine.** A building whose outline contains the point of a chimney, a transmitter or a wind turbine is not generated, the same as for water towers. A chimney drawn in OSM both as a point and as a round building outline no longer stands inside a "cylinder".
+- **Narrow silos.** A silo outline with a cross-section under 3 m gets the new narrow model `silos_narrow.obj` (3 × 3 m, 13.4 m high) with the same material and texture; after Import it is named `Silo_narrow_<patch>_NNN` and Merge joins it with the big silos into one `silo` object. Batch works the same way.
 
 **New in v0.9.22 — map data from local PBF files, silos, water towers and downloads that never give up:**
 - **OSM_pbf — no server needed.** With the new **OSM_pbf** checkbox all map data comes from `.osm.pbf` files downloaded from Geofabrik. **Detect countries scenery** writes `Scenery countries.html` with clickable links to exactly the files the scenery needs — only the regions that reach into the scenery, even across the sea (United Kingdom3 gets three French regions instead of the whole of France) — with the **size of every file** and the **total size**. Several files can be selected at once (Ctrl+A). **Split into Patches** is pressed once: it splits everything into one small file per patch, in the folder:
